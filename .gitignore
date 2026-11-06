@@ -1,0 +1,8 @@
+/.cache/
+/infra/.vagrant/
+/jepsen/target/
+/jepsen/store/
+/jepsen/.lein-*
+/jepsen/.nrepl-port
+.clj-kondo
+.lsp

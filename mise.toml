@@ -1,0 +1,170 @@
+[tools]
+java = "temurin-21.0.13+9.0.LTS"
+jq = "1.8.2"
+leiningen = "2.13.0"
+ruby = "3.3.13"
+"gem:vagrant" = "2.4.9"
+
+[settings]
+# Keep pinned tools ahead of system binaries in PATH.
+activate_aggressive = true
+
+[env]
+LAB_DEBIAN_RELEASE = "bookworm"
+LAB_DEBIAN_VERSION = "12"
+LAB_DEBIAN_IMAGE = "docker.io/library/debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc"
+LAB_APT_SNAPSHOT = "20261105T000000Z"
+LAB_POSTGRES_SHA = "48a9a8ff96b01ad2db32b2782e2a4f0cff78097c"
+LAB_ORIOLEDB_SHA = "47b822246687cf2e16f677496f6a1d1330dc2912"
+LAB_PG_CONFIGURE = "--enable-debug --enable-cassert --with-icu --with-openssl --with-lz4 --with-zstd"
+LAB_CFLAGS = "-O2 -g"
+LAB_RUNTIME_PACKAGES = "libc6 libicu72 libssl3 liblz4-1 libzstd1 zlib1g libreadline8 libtinfo6 libstdc++6 libgcc-s1 libcurl4"
+LAB_BUILD_PACKAGES = "build-essential bison flex pkg-config python3 libicu-dev libssl-dev liblz4-dev libzstd-dev zlib1g-dev libreadline-dev libcurl4-openssl-dev ca-certificates git jq"
+LAB_VAGRANT_LIBVIRT_VERSION = "0.12.2"
+LAB_VAGRANT_RACC_VERSION = "1.8.1"
+VAGRANT_DEFAULT_PROVIDER = "libvirt"
+
+[doctor.checks.commands]
+description = "Required system commands are available"
+run = """
+missing_commands=""
+for tool in git podman virsh ssh bash python3 bsdtar pkg-config make gcc gnuplot flock; do
+  if ! command -v "$tool" >/dev/null; then
+    missing_commands="$missing_commands $tool"
+  fi
+done
+
+if [ -n "$missing_commands" ]; then
+  echo "Missing system commands:$missing_commands" >&2
+  exit 1
+fi
+"""
+hint = "Install the host packages listed in README.md."
+
+[doctor.checks.architecture]
+description = "Host architecture is x86_64"
+run = 'test "$(uname -m)" = x86_64'
+
+[doctor.checks.kvm]
+description = "KVM device is accessible"
+run = "test -r /dev/kvm && test -w /dev/kvm"
+hint = "Enable KVM and grant the current user access to /dev/kvm."
+
+[doctor.checks.libvirt-dev]
+description = "Libvirt development files are available"
+run = "pkg-config --exists libvirt"
+hint = "Install libvirt-dev or libvirt-devel."
+
+[doctor.checks.podman]
+description = "Podman is operational"
+run = "podman info >/dev/null"
+timeout = "30s"
+
+[doctor.checks.libvirt]
+description = "System libvirt connection is accessible"
+run = "virsh -c qemu:///system list >/dev/null"
+
+[doctor.checks.vagrant-libvirt]
+description = "Pinned Vagrant libvirt plugin is installed"
+run = """
+vagrant plugin list | awk -F '[(), ]+' -v version="$LAB_VAGRANT_LIBVIRT_VERSION" '$1 == "vagrant-libvirt" && $2 == version {found=1} END {exit !found}'
+"""
+hint = "Run mise run vm:plugins."
+
+[tasks.doctor]
+description = "Check host prerequisites"
+run = "mise doctor project"
+
+[tasks."vm:plugins"]
+description = "Install the pinned vagrant-libvirt plugin"
+run = "bash scripts/plugins.sh"
+
+[tasks."vm:up"]
+description = "Create and provision all five Debian VMs"
+dir = "infra"
+run = """
+mkdir -p ../.cache
+flock ../.cache/lab.lock vagrant up
+"""
+
+[tasks."vm:provision"]
+dir = "infra"
+run = """
+mkdir -p ../.cache
+flock ../.cache/lab.lock vagrant provision
+"""
+
+[tasks."vm:status"]
+dir = "infra"
+run = "vagrant status"
+
+[tasks."vm:destroy"]
+description = "Destroy all five VMs; keep builds and Jepsen store"
+dir = "infra"
+run = """
+mkdir -p ../.cache
+flock ../.cache/lab.lock vagrant destroy --force
+"""
+
+[tasks.build]
+description = "Build and export PostgreSQL + OrioleDB using Podman's layer cache"
+run = """
+mkdir -p .cache
+flock .cache/lab.lock bash scripts/build.sh
+"""
+
+[tasks."cache:list"]
+run = "podman images --all --filter label=io.jepsen.orioledb.build=true"
+
+[tasks."cache:inspect"]
+run = "cat .cache/artifacts/current/build-info.json"
+
+[tasks."cache:verify"]
+run = """
+mkdir -p .cache
+flock .cache/lab.lock bash -c 'cd .cache/artifacts/current && sha256sum --check SHA256SUMS'
+"""
+
+[tasks."cache:prune"]
+description = "Remove dangling lab images; Podman asks for confirmation"
+run = """
+mkdir -p .cache
+flock .cache/lab.lock podman image prune --filter label=io.jepsen.orioledb.build=true
+"""
+
+[tasks."test:smoke"]
+description = "Run append on n1 for 30 seconds without faults"
+run = "mise run test:run -- --time-limit 30 --concurrency 4 --rate 10 --nemesis none"
+
+[tasks."test:run"]
+description = "Run Jepsen on n1; additional arguments go to the Jepsen CLI"
+run = """
+mkdir -p .cache
+flock .cache/lab.lock python3 scripts/test.py
+"""
+
+[tasks."lab:run"]
+description = "Build, create five VMs, and run a smoke test on n1"
+run = """
+mise run build
+mise run vm:up
+mise run test:smoke
+"""
+
+[tasks.check]
+description = "Check task code and the Clojure adapter"
+run = """
+for script in scripts/*.sh infra/provision.sh build/build.sh; do bash -n "$script"; done
+PYTHONPYCACHEPREFIX=.cache/pycache python3 -m py_compile scripts/test.py
+cd jepsen
+lein test
+lein check
+"""
+
+[tasks."upstream:sql"]
+description = "Explicitly pull SQL subtree updates (requires clean Git state)"
+run = "git subtree pull --prefix=vendor/jepsen-sql https://github.com/jepsen-io/sql.git main --squash"
+
+[tasks."upstream:postgres"]
+description = "Explicitly pull Postgres subtree updates (requires clean Git state)"
+run = "git subtree pull --prefix=vendor/jepsen-postgres https://github.com/jepsen-io/postgres.git main --squash"

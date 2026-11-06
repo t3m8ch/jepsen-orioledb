@@ -1,0 +1,230 @@
+# OrioleDB + Jepsen: Local Testbed
+
+Five identical Debian 12 VMs running under libvirt/KVM, PostgreSQL 17 + OrioleDB built in
+rootless Podman, and Jepsen running on the controlling Linux host. Jepsen currently uses
+**only n1**. There is no replication, failover, or topology selection.
+PostgreSQL runs directly in the VM, without a container.
+
+## Host Requirements
+
+The initial version targets Linux x86_64. You need:
+
+- KVM with access to `/dev/kvm`, libvirt with a `qemu:///system` connection, QEMU,
+  libvirt network support (usually dnsmasq), and `virsh`;
+- rootless Podman with configured subuid/subgid;
+- Git with `git subtree`, an OpenSSH client, Bash, Python 3, `bsdtar`, `curl`, `unzip`, and `gnuplot`;
+- a C compiler, `make`, `pkg-config`, and libvirt headers for building the
+  `vagrant-libvirt` plugin (the `libvirt-dev` / `libvirt-devel` package);
+- mise 2026.11.0 or newer. The JDK, jq, Leiningen, Ruby, and Vagrant versions
+  are pinned in `mise.toml`. Vagrant is installed as a Ruby gem through mise;
+- approximately 8 GiB of RAM for the five VMs plus memory for the controlling JVM,
+  and free disk space for the VMs and builds. The build uses up to four make jobs.
+
+System services and KVM/libvirt permissions are configured using the distribution's tools.
+Project tasks do not change system service settings or install system packages.
+`vagrant-libvirt` manages the storage pool. If the `default` pool does not exist, the provider
+creates it in `/var/lib/libvirt/images/vagrant`; this path is set in the `Vagrantfile`.
+`vm:destroy` deletes the VMs but retains the pool and base box disk for the next run.
+The `192.168.77.0/24` network must be available on the host. Each VM has a separate libvirt
+management interface and an isolated test network; synced folders are disabled.
+
+## First Run
+
+From the repository root:
+
+```sh
+mise trust
+mise install
+mise run vm:plugins
+mise doctor project
+mise run lab:run
+```
+
+Host checks are declared in `[doctor.checks.*]` in `mise.toml`.
+`mise run doctor` remains an alias for `mise doctor project`.
+
+`lab:run` sequentially obtains/builds the binary artifact, starts and provisions
+**all five VMs**, and runs a short `append` test on n1 without faults.
+The default isolation level is `read-committed`, with the expected consistency model of the same name:
+OrioleDB does not yet support `serializable`.
+Results remain in `jepsen/store/`. The VMs are kept after the test, and the database is cleaned up.
+A consistency model violation causes Jepsen to exit with a nonzero status.
+
+The steps can also be run separately:
+
+```sh
+mise run build
+mise run vm:up
+mise run vm:provision
+mise run vm:status
+mise run test:smoke
+mise run test:run -- --time-limit 120 --concurrency 16 --rate 50 --nemesis kill,pause
+mise run vm:destroy
+```
+
+Arguments after `--` are passed to Jepsen. Upstream SQL workloads are available,
+for example `--workload append`, `rw`, `internal`, `internal-sim`, and `default-value`.
+The isolation level and expected model are set using the standard `--isolation` and
+`--expected-consistency-model` options. Available faults are `none`, `kill`, `pause`,
+and `kill,pause`. After injecting faults, the generator clears them and resumes the workload
+to verify recovery. `kill` means SIGKILL to PostgreSQL processes, not VM power loss.
+The `--node` / `--nodes` options do not switch nodes: only n1 from Vagrant is used.
+SSH access is taken from `vagrant ssh-config n1`, including the Vagrant-generated
+key. JDBC connects to `192.168.77.11`.
+
+```sh
+mise exec -- lein -h  # Show the tool version and help
+cd jepsen
+mise exec -- lein run test --help
+```
+
+To view the results, run `lein run serve` from `jepsen/`.
+
+## Project Layout
+
+- `mise.toml`: tool versions, pinned build inputs, and tasks.
+- `infra/Vagrantfile`: exactly five VMs, each with 2 vCPUs and 1536 MiB of RAM; the
+  Debian box version and SHA256, networks, and provisioner invocation.
+- `infra/provision.sh`: one script for all VMs, safe to run repeatedly. It installs runtime packages,
+  process-management tools, users, and sudo. It also installs GCC,
+  `wget`, and `ntpdate`, which are required by the standard upstream nemesis setup. It does not install PostgreSQL.
+- `build/Containerfile`: the Debian build stage and a final stage containing only artifacts.
+- `build/build.sh`: build, smoke test, and packaging inside the container.
+- `scripts/build.sh` and `scripts/plugins.sh`: build invocation and plugin installation.
+- `scripts/test.py`: runs Jepsen and parses the Vagrant SSH configuration using
+  the Python standard library. Mise tasks invoke the scripts directly.
+- `jepsen/project.clj`: a single Leiningen project. `:source-paths` directly includes
+  both subtrees. Nested `project.clj` files are not read automatically. When updating
+  upstream, compare its external dependencies with our `project.clj`.
+- `jepsen/src/jepsen/orioledb/`: the CLI and DB adapter.
+- `jepsen/resources/`: PostgreSQL configuration files.
+
+Generated files are not committed: `.cache/`, `infra/.vagrant/`, `jepsen/target/`,
+and `jepsen/store/`. There are no separate `.state/`, `results/`, or `lab.lock.toml` files.
+
+## Reproducibility and Build
+
+`mise.toml` pins the OrioleDB and patched PostgreSQL SHAs, the Debian OCI image
+by digest, the APT snapshot, package sets, and compilation parameters. The Debian release,
+architecture, and snapshot are identical for the builder and VMs. The Vagrant box version
+is pinned in the `Vagrantfile`. Floating branches are not used in normal builds.
+
+To change the OrioleDB version, update `LAB_ORIOLEDB_SHA`, read `.pgtags` from **that
+commit**, and set the corresponding PostgreSQL 17 SHA in `LAB_POSTGRES_SHA`.
+The build script verifies this pair; OrioleDB also checks the patchset during compilation.
+Dependency and image updates are explicit changes to tracked files.
+
+The builder runs as an unprivileged user. PostgreSQL and contrib are installed
+into `/opt/jepsen/pgsql`, and then OrioleDB is installed there using this build's
+`pg_config`. The smoke test creates a cluster with locale C, loads the extension,
+creates an OrioleDB table, and verifies the data after a restart. The source-build
+container runs without network access (`RUN --network=none`). Sources and packages are downloaded
+by the preceding Containerfile steps. Download retries handle transient Debian Snapshot errors.
+
+The final `FROM scratch` stage contains only `pgsql.tar.gz`, `build-info.json`,
+`SHA256SUMS`, `ldd.txt`, and `smoke.log`. `podman build --output type=local,dest=...`
+exports these files to the host. After successful checksum verification, the result
+replaces `.cache/artifacts/current/`. The full build log is stored in `.cache/build.log`.
+`build-info.json` is also included in the installation archive. It contains revisions,
+build parameters, and exact runtime package versions.
+
+This provides reproducibility of inputs and experimental conditions. Bit-for-bit identity
+of compilation results and the Jepsen concurrent schedule is not guaranteed.
+
+## Binary Cache
+
+Podman manages the cache. Compilation runs in `RUN`, so a repeated
+`mise run build` uses the existing layers. Changing source SHAs, build args,
+the Containerfile, or build.sh causes the affected steps to run again.
+There is no custom cache key. The current result is tagged
+`localhost/jepsen-orioledb:build`.
+
+Before each test, the project builds and exports using the current parameters:
+Podman uses the cache, and Jepsen receives binaries matching the configuration.
+Exported file checksums are verified before installation in the VM.
+
+```sh
+mise run cache:list
+mise run cache:inspect
+mise run cache:verify
+mise run cache:prune
+```
+
+`list` shows the testbed images, `inspect` shows details of the latest export, and
+`verify` checks its checksums. `prune` invokes standard Podman cleanup
+filtered by the testbed label and asks for confirmation. Untagged images are removed;
+this may remove cache layers and trigger a full recompilation. Images from other
+projects are not affected.
+
+A particular build can be preserved with an additional tag, for example:
+
+```sh
+podman tag localhost/jepsen-orioledb:build localhost/jepsen-orioledb:experiment-1
+```
+
+After the next build, the `experiment-1` tag will continue to point to the saved
+artifacts. Delete a specific saved build using the standard
+`podman image rm localhost/jepsen-orioledb:experiment-1` command.
+
+Mise tasks acquire a common `.cache/lab.lock` lock: builds, tests, VM operations,
+and cache changes run sequentially. `flock` runs the command
+under the lock and releases it upon completion. The scripts themselves do not manage
+locks; run operations through `mise run`.
+Independent concurrent testbeds require a separate
+host because the VM names and subnet are fixed here.
+
+The old `.cache/sources/` and `.cache/artifacts/<old-hash>/` directories from the previous
+implementation are no longer used and are not deleted automatically. A failed
+build retains `.cache/build.log` and does not replace the previous successful export.
+
+## Database Lifecycle and Results
+
+Provisioning prepares Debian. The Jepsen DB adapter:
+
+1. Checks the Debian release, architecture, and exact runtime versions against the build.
+2. Uploads the archive and verifies its SHA256 on the node.
+3. Installs the binaries and creates a fresh PGDATA using `initdb --locale=C`.
+4. Configures preloading and `default_table_access_method = 'orioledb'`, starts the database,
+   and creates the extension. Creating a table without `USING` verifies the actual access method.
+5. Implements `Kill` and `Pause` for the nemesis.
+6. Provides logs, configuration files, and `build-info.json` through `jepsen.db/LogFiles`.
+7. Deletes PGDATA and the installation after the standard diagnostic collection.
+
+Jepsen stores the history, parameters, and results in its `store`. The test map
+includes the artifact checksum; information about the installed build is copied from the node
+through `LogFiles`. There is no custom run manifest.
+
+PostgreSQL trust authentication is used on the trusted, isolated test network;
+SSH uses the Vagrant key and sudo. Do not connect these VMs to a public network.
+
+## Subtrees and Upstream
+
+The following repositories were imported in full with `--squash`:
+
+- `https://github.com/jepsen-io/sql`, prefix `vendor/jepsen-sql`, source commit
+  `8bc137c722be0c5c4d2a2258d73dd875aa339fe8`;
+- `https://github.com/jepsen-io/postgres`, prefix `vendor/jepsen-postgres`, commit
+  `60480a0f09313ade150408befc3f58ae1e4ccbad`.
+
+Local changes within the subtrees are committed normally and used directly by the next run,
+without `lein install` or JAR publication.
+With a clean working tree, update upstream explicitly:
+
+```sh
+mise run upstream:sql
+mise run upstream:postgres
+mise run check
+```
+
+Git stores the imported revisions in `git-subtree-*` trailers on the squash commits.
+Regular builds and tests do not update the subtrees or modify the test sources.
+
+## Checks Without VMs
+
+```sh
+mise run check
+```
+
+This checks shell syntax, Jepsen test construction, node/network selection,
+and all Clojure namespaces. `cache:verify` checks binary cache integrity.
+Full verification requires `mise run lab:run` on a host with KVM/libvirt.

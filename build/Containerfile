@@ -1,0 +1,42 @@
+ARG LAB_DEBIAN_IMAGE
+FROM ${LAB_DEBIAN_IMAGE} AS builder
+
+ARG LAB_DEBIAN_RELEASE
+ARG LAB_APT_SNAPSHOT
+ARG LAB_BUILD_PACKAGES
+ARG LAB_RUNTIME_PACKAGES
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN rm -f /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources \
+  && printf 'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/%s/ %s main\ndeb [check-valid-until=no] http://snapshot.debian.org/archive/debian-security/%s/ %s-security main\n' \
+  "$LAB_APT_SNAPSHOT" "$LAB_DEBIAN_RELEASE" "$LAB_APT_SNAPSHOT" "$LAB_DEBIAN_RELEASE" > /etc/apt/sources.list \
+  && apt-get -o Acquire::Retries=3 update \
+  && apt-get -o Acquire::Retries=3 install -y --no-install-recommends $LAB_BUILD_PACKAGES $LAB_RUNTIME_PACKAGES \
+  && rm -rf /var/lib/apt/lists/* \
+  && useradd --create-home --uid 1000 builder \
+  && install -d -o builder -g builder /opt/jepsen /work /out
+
+LABEL io.jepsen.orioledb.build=true
+USER builder
+WORKDIR /work
+
+ARG LAB_POSTGRES_SHA
+ARG LAB_ORIOLEDB_SHA
+RUN git init /work/postgres \
+  && git -C /work/postgres fetch --depth=1 https://github.com/orioledb/postgres.git "$LAB_POSTGRES_SHA" \
+  && git -C /work/postgres checkout --detach FETCH_HEAD \
+  && git init /work/orioledb \
+  && git -C /work/orioledb fetch --depth=1 https://github.com/orioledb/orioledb.git "$LAB_ORIOLEDB_SHA" \
+  && git -C /work/orioledb checkout --detach FETCH_HEAD
+
+COPY --chmod=0755 build.sh /usr/local/bin/build.sh
+
+ARG LAB_DEBIAN_IMAGE
+ARG LAB_DEBIAN_VERSION
+ARG LAB_PG_CONFIGURE
+ARG LAB_CFLAGS
+RUN --network=none /usr/local/bin/build.sh
+
+FROM scratch AS artifacts
+LABEL io.jepsen.orioledb.build=true
+COPY --from=builder /out/ /

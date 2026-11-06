@@ -1,0 +1,32 @@
+# Run through mise so the build and provisioning use the same Debian inputs.
+Vagrant.configure("2") do |config|
+  config.vm.box = "debian/bookworm64"
+  config.vm.box_version = "12.20260519.1"
+  config.vm.box_download_checksum_type = "sha256"
+  config.vm.box_download_checksum = "a7d25c16b12f22214cfd8f612e1d207334be275a57da1011b1f2d00ec77815b2"
+  config.vm.synced_folder ".", "/vagrant", disabled: true
+  config.ssh.insert_key = true
+
+  config.vm.provider :libvirt do |lv|
+    lv.uri = "qemu:///system"
+    lv.driver = "kvm"
+    lv.cpus = 2
+    lv.memory = 1536
+    lv.default_prefix = "jepsen-orioledb"
+    lv.storage_pool_path = "/var/lib/libvirt/images/vagrant"
+  end
+
+  (1..5).each do |i|
+    config.vm.define "n#{i}" do |node|
+      node.vm.hostname = "n#{i}"
+      # The provider's management interface remains available for SSH.
+      node.vm.network :private_network, ip: "192.168.77.#{10 + i}",
+                      libvirt__network_name: "jepsen-orioledb-data",
+                      libvirt__forward_mode: "none"
+      node.vm.provision :shell, path: "provision.sh", args: [
+        ENV.fetch("LAB_DEBIAN_RELEASE"), ENV.fetch("LAB_DEBIAN_VERSION"),
+        ENV.fetch("LAB_APT_SNAPSHOT"), ENV.fetch("LAB_RUNTIME_PACKAGES")
+      ]
+    end
+  end
+end
