@@ -1,3 +1,7 @@
+## Language
+
+Use English for all project artifacts, including issue titles, descriptions and comments, documentation, code comments, commit messages, and pull request titles and descriptions.
+
 ## Agent skills
 
 ### Issue tracker
