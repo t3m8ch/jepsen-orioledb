@@ -36,8 +36,7 @@ All checkouts and Git worktrees for the same user share **one set of five VMs**.
 Mise tasks use `${XDG_STATE_HOME:-$HOME/.local/state}/jepsen-orioledb/` for:
 
 - `vagrant/`: Vagrant machine identities and SSH keys;
-- `lab.lock`: an exclusive lock held for the full command, including the entire Jepsen test;
-- `vagrant-initialized`: prevents re-importing old machine identities after VM deletion.
+- `lab.lock`: an exclusive lock held for the full command, including the entire Jepsen test.
 
 These are local runtime files, never committed to Git. VM disks remain in the system
 libvirt storage pool. Build exports and test results stay in the invoking checkout.
@@ -47,12 +46,6 @@ VM operations (including status), builds, cache verification/pruning, and tests 
 for this shared lock. `lab:run` holds it continuously from the build through VM startup
 and the smoke test. This prevents another agent from stopping, provisioning, or using
 the VMs during a test, and protects the shared Podman build tag.
-
-On first use, the wrapper looks for existing `infra/.vagrant/` state in this repository's
-registered Git worktrees and copies it, including SSH keys, into the shared directory.
-It leaves the original files intact. Conflicting machine identities across worktrees
-cause an error instead of choosing a set of VMs. Separate clones are not searched:
-copy their existing state to the shared `vagrant/` directory before first use if needed.
 
 Update every worktree to this task implementation before running agents concurrently:
 older tasks still use checkout-local locks. Use the mise tasks for lab operations;
