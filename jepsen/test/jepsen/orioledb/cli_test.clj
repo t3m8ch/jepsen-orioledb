@@ -1,5 +1,6 @@
 (ns jepsen.orioledb.cli-test
   (:require [clojure.test :refer :all]
+            [clojure.tools.cli :as tools-cli]
             [jepsen.db :as db]
             [jepsen.orioledb.cli :as cli]
             [jepsen.postgres.client :as pg]))
@@ -13,11 +14,13 @@
    "LAB_DATA_HOST" "192.168.77.11"})
 
 (deftest construct-test-with-one-node-and-supported-faults
-  (doseq [faults [[] [:kill] [:pause] [:kill :pause]]]
+  (doseq [engine [nil :postgres :orioledb]
+          faults [[] [:kill] [:pause] [:kill :pause]]]
     (with-redefs [cli/required-env environment
                   cli/artifact-checksum (constantly "checksum")]
       (let [test (cli/orioledb-test
                   {:nodes ["ignored-node" "another-ignored-node"]
+                   :engine engine
                    :workload :append
                    :isolation :read-committed
                    :expected-consistency-model :read-committed
@@ -36,6 +39,9 @@
                    :mop-delay 0
                    :savepoints true
                    :wfr-keys? true})]
+        (is (= (or engine :orioledb) (:engine test)))
+        (is (= (str (name (or engine :orioledb)) "-append-read-committed")
+               (:name test)))
         (is (= ["192.168.121.10"] (:nodes test)))
         (is (= "192.168.77.11" (:data-host test)))
         (is (= "/actual/vagrant/key" (get-in test [:ssh :private-key-path])))
@@ -49,3 +55,12 @@
     (is (= ["postgres" "192.168.77.11"]
            (cli/open {:postgres-user "postgres" :data-host "192.168.77.11"}
                      "192.168.121.10")))))
+
+(deftest engine-cli-option
+  (is (= :orioledb (get-in (tools-cli/parse-opts [] cli/cli-opts) [:options :engine])))
+  (doseq [engine ["postgres" "orioledb"]]
+    (let [{:keys [options errors]} (tools-cli/parse-opts ["--engine" engine] cli/cli-opts)]
+      (is (empty? errors))
+      (is (= (keyword engine) (:engine options)))))
+  (doseq [args [["--engine" "heap"] ["--engine" "unknown"] ["--engine"]]]
+    (is (seq (:errors (tools-cli/parse-opts args cli/cli-opts))))))
