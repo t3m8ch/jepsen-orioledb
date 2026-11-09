@@ -1,4 +1,4 @@
-"""Exercise state adoption and cross-checkout locking without booting VMs."""
+"""Exercise shared state and cross-checkout locking without booting VMs."""
 import fcntl
 import os
 import shutil
@@ -17,17 +17,9 @@ class SharedLabTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.base = Path(self.temporary.name)
         self.repo = self.base / "repo"
-        self.repo.mkdir()
-        subprocess.run(["git", "init", "-q", str(self.repo)], check=True)
-        subprocess.run(
-            ["git", "-c", "user.name=Test", "-c", "user.email=test@example.org",
-             "commit", "-q", "--allow-empty", "-m", "Initial"], cwd=self.repo, check=True
-        )
         self.other = self.base / "other checkout"
-        subprocess.run(["git", "worktree", "add", "-q", "-b", "other", str(self.other)],
-                       cwd=self.repo, check=True)
         for checkout in (self.repo, self.other):
-            (checkout / "scripts").mkdir()
+            (checkout / "scripts").mkdir(parents=True)
             (checkout / "infra").mkdir()
             shutil.copyfile(SCRIPT, checkout / "scripts/lab.py")
         self.env = dict(os.environ, XDG_STATE_HOME=str(self.base / "state"))
@@ -37,35 +29,17 @@ class SharedLabTests(unittest.TestCase):
         return subprocess.run([sys.executable, str(checkout / "scripts/lab.py"), *args],
                               env=self.env, capture_output=True, text=True, **kwargs)
 
-    def legacy(self, checkout, identity):
-        directory = checkout / "infra/.vagrant/machines/n1/libvirt"
-        directory.mkdir(parents=True)
-        (directory / "id").write_text(identity)
-        (directory / "private_key").write_text("test key")
-
-    def test_adopts_existing_vms_and_keys_from_another_worktree(self):
-        self.legacy(self.repo, "existing-vm")
-        for checkout in (self.other, self.repo):
-            result = self.run_lab(checkout, sys.executable, "-c",
-                                  "import os; print(os.environ['VAGRANT_DOTFILE_PATH'])")
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(result.stdout.strip(), str(self.state / "vagrant"))
-        adopted = self.state / "vagrant/machines/n1/libvirt"
-        self.assertEqual((adopted / "id").read_text(), "existing-vm")
-        self.assertEqual((adopted / "private_key").read_text(), "test key")
+    def test_checkouts_share_persistent_state(self):
+        result = self.run_lab(self.repo, sys.executable, "-c",
+                              "import os; print(os.environ['VAGRANT_DOTFILE_PATH'])")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), str(self.state / "vagrant"))
+        (self.state / "vagrant/shared-data").write_text("existing state")
+        result = self.run_lab(self.other, sys.executable, "-c",
+                              "import os,pathlib; print((pathlib.Path(os.environ['VAGRANT_DOTFILE_PATH']) / 'shared-data').read_text())")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "existing state")
         self.assertEqual(self.state.stat().st_mode & 0o777, 0o700)
-        # Destroying shared machines must not cause old identities to be re-imported.
-        shutil.rmtree(self.state / "vagrant")
-        self.assertEqual(self.run_lab(self.other, "true").returncode, 0)
-        self.assertFalse((self.state / "vagrant/machines").exists())
-
-    def test_refuses_conflicting_legacy_states(self):
-        self.legacy(self.repo, "first-vm")
-        self.legacy(self.other, "second-vm")
-        result = self.run_lab(self.other, "true")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("Conflicting Vagrant states", result.stderr)
-        self.assertFalse((self.state / "vagrant").exists())
 
     def test_lock_survives_exec_and_serializes_checkouts(self):
         marker = self.base / "ready"
