@@ -62,6 +62,19 @@ mise run test:run -- --time-limit 120 --concurrency 16 --rate 50 --nemesis kill,
 mise run vm:destroy
 ```
 
+Select the storage engine with `--engine postgres` or `--engine orioledb`:
+
+```sh
+mise run test:run -- --engine postgres --workload append --time-limit 30 --nemesis none
+mise run test:run -- --engine orioledb --workload append --time-limit 30 --nemesis none
+```
+
+The default is `orioledb`, including `test:smoke`. Both modes use the same cached
+PostgreSQL build (with OrioleDB patches); `postgres` runs without preloading or
+creating the OrioleDB extension and uses standard `heap` tables. All workloads,
+isolation options, and faults work with either engine. The selected engine is
+saved as `:engine` in the test metadata and prefixes the test name in `jepsen/store/`.
+
 Arguments after `--` are passed to Jepsen. Upstream SQL workloads are available,
 for example `--workload append`, `rw`, `internal`, `internal-sim`, and `default-value`.
 The isolation level and expected model are set using the standard `--isolation` and
@@ -184,8 +197,9 @@ Provisioning prepares Debian. The Jepsen DB adapter:
 1. Checks the Debian release, architecture, and exact runtime versions against the build.
 2. Uploads the archive and verifies its SHA256 on the node.
 3. Installs the binaries and creates a fresh PGDATA using `initdb --locale=C`.
-4. Configures preloading and `default_table_access_method = 'orioledb'`, starts the database,
-   and creates the extension. Creating a table without `USING` verifies the actual access method.
+4. Configures the selected engine: OrioleDB preloading, extension, and default access method,
+   or no preloading/extension and the `heap` default for PostgreSQL. Creating a table
+   without `USING` verifies and logs the actual access method in both modes.
 5. Implements `Kill` and `Pause` for the nemesis.
 6. Provides logs, configuration files, and `build-info.json` through `jepsen.db/LogFiles`.
 7. Deletes PGDATA and the installation after the standard diagnostic collection.

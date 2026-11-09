@@ -30,7 +30,8 @@
 (def workloads (sql/workloads {:open open :error-fn pg-client/error-fn}))
 
 (defn orioledb-test [opts]
-  (let [artifact (required-env "LAB_ARTIFACT")
+  (let [engine (or (:engine opts) :orioledb)
+        artifact (required-env "LAB_ARTIFACT")
         host (required-env "LAB_SSH_HOST")
         database (db/database)
         workload ((workloads (:workload opts)) opts)
@@ -40,7 +41,8 @@
                   :kill {:targets [:all]}
                   :interval (:nemesis-interval opts)})]
     (merge tests/noop-test opts
-           {:name (str "orioledb-" (name (:workload opts)) "-" (name (:isolation opts)))
+           {:engine engine
+            :name (str (name engine) "-" (name (:workload opts)) "-" (name (:isolation opts)))
             :nodes [host]
             :ssh {:username (required-env "LAB_SSH_USER")
                   :private-key-path (required-env "LAB_SSH_KEY")
@@ -73,7 +75,10 @@
 (def cli-opts
   (cli/merge-opt-specs
    sql/cli-opts
-   [["-i" "--isolation LEVEL" "Transaction isolation level"
+   [[nil "--engine ENGINE" "Storage engine: postgres or orioledb"
+     :default :orioledb :parse-fn keyword
+     :validate [#{:postgres :orioledb} "Supported engines: postgres and orioledb"]]
+    ["-i" "--isolation LEVEL" "Transaction isolation level"
      :default :read-committed :parse-fn keyword
      :validate [#{:read-committed :repeatable-read}
                 "Supported isolation levels: read-committed and repeatable-read"]]

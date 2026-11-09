@@ -3,6 +3,7 @@
   (:require [cheshire.core :as json]
             [clojure.java.io :as io]
             [clojure.string :as str]
+            [clojure.tools.logging :refer [info]]
             [jepsen.control :as c]
             [jepsen.control.util :as cu]
             [jepsen.db :as db]
@@ -77,17 +78,35 @@
           (c/exec :rm :-f remote)
           (c/exec :rmdir (.getParent (io/file remote))))))))
 
+(defn engine-settings [test]
+  (case (or (:engine test) :orioledb)
+    :postgres {:preload "" :access-method "heap"}
+    :orioledb {:preload "orioledb" :access-method "orioledb"}))
+
+(defn cluster-config [test]
+  (let [{:keys [preload access-method]} (engine-settings test)]
+    (str (slurp (io/resource "orioledb.conf"))
+         "\nshared_preload_libraries = '" preload "'\n"
+         "default_table_access_method = '" access-method "'\n"
+         "unix_socket_directories = '/var/lib/jepsen'\n")))
+
 (defn check-cluster! [test]
-  (start! test)
-  (sql! test "CREATE EXTENSION orioledb")
-  ;; The upstream workloads omit USING; ensure their sessions default to OrioleDB.
-  (sql! test "CREATE TABLE public.jepsen_engine_probe (id int PRIMARY KEY)")
-  (when-not (= "orioledb"
-               (:amname
-                (sql! test (str "SELECT am.amname FROM pg_class c JOIN pg_am am ON am.oid=c.relam "
-                                "WHERE c.oid='public.jepsen_engine_probe'::regclass"))))
-    (throw (ex-info "Default table access method is not OrioleDB" {})))
-  (sql! test "DROP TABLE public.jepsen_engine_probe"))
+  (let [expected (:access-method (engine-settings test))]
+    (start! test)
+    (when (= "orioledb" expected)
+      (sql! test "CREATE EXTENSION orioledb"))
+    ;; Upstream workloads omit USING; verify the default for their sessions.
+    (sql! test "CREATE TABLE public.jepsen_engine_probe (id int PRIMARY KEY)")
+    (try
+      (let [actual (:amname
+                    (sql! test (str "SELECT am.amname FROM pg_class c JOIN pg_am am ON am.oid=c.relam "
+                                    "WHERE c.oid='public.jepsen_engine_probe'::regclass")))]
+        (when-not (= expected actual)
+          (throw (ex-info "Unexpected default table access method"
+                          {:expected expected :actual actual})))
+        (info "Verified default table access method:" actual))
+      (finally
+        (sql! test "DROP TABLE public.jepsen_engine_probe")))))
 
 (defn setup-cluster! [test]
   (c/su
@@ -96,8 +115,7 @@
    (c/exec :chown "postgres:postgres" log-file))
   (c/sudo "postgres"
           (c/exec (binary "initdb") :-D data-dir :--locale=C :--encoding=UTF8)
-          (cu/write-file! (str (slurp (io/resource "orioledb.conf"))
-                               "\nunix_socket_directories = '/var/lib/jepsen'\n")
+          (cu/write-file! (cluster-config test)
                           (str data-dir "/postgresql.conf"))
           (cu/write-file! (slurp (io/resource "orioledb-pg_hba.conf"))
                           (str data-dir "/pg_hba.conf")))
