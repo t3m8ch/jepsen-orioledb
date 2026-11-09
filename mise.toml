@@ -93,6 +93,14 @@ run = "python3 scripts/lab.py vagrant status"
 description = "Shut down all five VMs; keep their disks and data"
 run = "python3 scripts/lab.py vagrant halt"
 
+[tasks."vm:snapshot"]
+description = "Save an offline baseline of all five VMs; --replace explicitly refreshes it"
+run = "python3 scripts/lab.py python3 scripts/snapshot.py save"
+
+[tasks."vm:reset"]
+description = "Discard VM changes and restart all five VMs from their saved baseline"
+run = "python3 scripts/lab.py python3 scripts/snapshot.py restore"
+
 [tasks."vm:destroy"]
 description = "Destroy all five VMs; keep builds and Jepsen store"
 run = "python3 scripts/lab.py vagrant destroy --force"
@@ -145,7 +153,7 @@ description = "Check task code and the Clojure adapter"
 run = """
 for script in scripts/*.sh infra/provision.sh build/build.sh; do bash -n "$script"; done
 export PYTHONPYCACHEPREFIX="$PWD/.cache/pycache"
-python3 -m py_compile scripts/test.py scripts/lab.py
+python3 -m py_compile scripts/test.py scripts/lab.py scripts/snapshot.py
 python3 -m unittest discover -s scripts/tests
 cd jepsen
 lein test
