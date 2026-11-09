@@ -152,6 +152,20 @@ creating the OrioleDB extension and uses standard `heap` tables. All workloads,
 isolation options, and faults work with either engine. The selected engine is
 saved as `:engine` in the test metadata and prefixes the test name in `jepsen/store/`.
 
+Set OrioleDB buffer sizes before server startup with `--main-buffers` and
+`--undo-buffers`. Each accepts a positive integer followed by `kB`, `MB`, `GB`, or
+`TB`. Omitted options leave the server defaults in place. Both options are ignored
+when using `--engine postgres`; they do not change PostgreSQL `shared_buffers`.
+
+```sh
+mise run test:run -- --main-buffers 8MB --undo-buffers 32MB --key-count 1000 --time-limit 600
+```
+
+The selected build enforces its own minimum buffer sizes, which can depend on
+the configured number of server processes. PostgreSQL rejects sizes below those
+limits at startup. Small buffers and a large key count alone do not establish
+that page eviction occurred; verify eviction when interpreting the run.
+
 Arguments after `--` are passed to Jepsen. Upstream SQL workloads are available,
 for example `--workload append`, `rw`, `internal`, `internal-sim`, and `default-value`.
 The isolation level and expected model are set using the standard `--isolation` and

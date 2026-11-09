@@ -88,7 +88,12 @@
     (str (slurp (io/resource "orioledb.conf"))
          "\nshared_preload_libraries = '" preload "'\n"
          "default_table_access_method = '" access-method "'\n"
-         "unix_socket_directories = '/var/lib/jepsen'\n")))
+         "unix_socket_directories = '/var/lib/jepsen'\n"
+         (when (= "orioledb" access-method)
+           (str (when-let [size (:main-buffers test)]
+                  (str "orioledb.main_buffers = '" size "'\n"))
+                (when-let [size (:undo-buffers test)]
+                  (str "orioledb.undo_buffers = '" size "'\n")))))))
 
 (defn check-cluster! [test]
   (let [expected (:access-method (engine-settings test))]

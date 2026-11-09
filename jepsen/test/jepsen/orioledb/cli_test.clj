@@ -1,8 +1,10 @@
 (ns jepsen.orioledb.cli-test
   (:require [clojure.test :refer :all]
+            [clojure.string :as str]
             [clojure.tools.cli :as tools-cli]
             [jepsen.db :as db]
             [jepsen.orioledb.cli :as cli]
+            [jepsen.orioledb.db :as orioledb-db]
             [jepsen.postgres.client :as pg]))
 
 (def environment
@@ -64,3 +66,21 @@
       (is (= (keyword engine) (:engine options)))))
   (doseq [args [["--engine" "heap"] ["--engine" "unknown"] ["--engine"]]]
     (is (seq (:errors (tools-cli/parse-opts args cli/cli-opts))))))
+
+(deftest buffer-cli-options-reach-cluster-config
+  (let [{:keys [options errors]}
+        (tools-cli/parse-opts ["--main-buffers" "8MB" "--undo-buffers" "32MB"] cli/cli-opts)
+        config (orioledb-db/cluster-config options)]
+    (is (empty? errors))
+    (is (= "8MB" (:main-buffers options)))
+    (is (= "32MB" (:undo-buffers options)))
+    (is (str/includes? config "orioledb.main_buffers = '8MB'\n"))
+    (is (str/includes? config "orioledb.undo_buffers = '32MB'\n"))))
+
+(deftest buffer-cli-size-validation
+  (doseq [flag ["--main-buffers" "--undo-buffers"]]
+    (doseq [size ["1kB" "8MB" "1GB" "1TB"]]
+      (is (empty? (:errors (tools-cli/parse-opts [flag size] cli/cli-opts)))))
+    (doseq [size ["0MB" "-1MB" "8" "8MiB" "1.5MB" "8MB\nfsync=off" "8MB'"]]
+      (is (seq (:errors (tools-cli/parse-opts [flag size] cli/cli-opts)))))
+    (is (seq (:errors (tools-cli/parse-opts [flag] cli/cli-opts))))))
