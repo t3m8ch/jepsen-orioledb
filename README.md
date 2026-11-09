@@ -87,6 +87,45 @@ mise run vm:halt
 mise run vm:destroy
 ```
 
+### Restore VMs without recreating them
+
+After `vm:up` / `vm:provision`, and **before running Jepsen**, save a clean baseline:
+
+```sh
+mise run vm:snapshot
+# Run tests, then discard all changes inside the five VMs:
+mise run vm:reset
+```
+
+Both commands hold the shared lab lock throughout. `vm:snapshot` shuts down all
+five VMs, creates internal qcow2 snapshots named `jepsen-baseline` through libvirt,
+and starts the VMs again without provisioning. Only disk state is captured, not RAM.
+The baseline includes Vagrant's already-installed SSH key.
+
+`vm:reset` checks all five snapshots and VM identities before changing anything,
+forcibly powers off the VMs (including unresponsive guests), restores the snapshots,
+and starts all five without provisioning. **All guest changes since the baseline
+are lost**, including test data and guest logs. Host build caches and `jepsen/store/`
+are retained. Reset can be repeated; it never creates a missing baseline implicitly.
+
+After changing provisioning, prepare clean VMs and explicitly refresh the baseline:
+
+```sh
+mise run vm:provision
+mise run vm:snapshot -- --replace
+```
+
+Provisioning does not remove old test files: after a test, reset to the old baseline
+before provisioning, or recreate the VMs if no clean baseline exists. Snapshots
+capture the current disk contents; saving one does not itself clean the guests.
+
+Baseline identities are recorded in `baseline.json` alongside the shared Vagrant
+state. A destroyed/recreated VM invalidates that record. An interrupted capture
+leaves no usable complete baseline; retry with `--replace`. Capture and restore
+are sequential across VMs, not a transaction across all five. On failure, some
+VMs may remain stopped or already restored; correct the error and retry. Commands
+use the configured `qemu:///system` connection; no extra snapshot plugin is needed.
+
 Select the storage engine with `--engine postgres` or `--engine orioledb`:
 
 ```sh
