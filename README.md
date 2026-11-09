@@ -30,6 +30,35 @@ Start them again with `vm:up`.
 The `192.168.77.0/24` network must be available on the host. Each VM has a separate libvirt
 management interface and an isolated test network; synced folders are disabled.
 
+## Shared Local Lab
+
+All checkouts and Git worktrees for the same user share **one set of five VMs**.
+Mise tasks use `${XDG_STATE_HOME:-$HOME/.local/state}/jepsen-orioledb/` for:
+
+- `vagrant/`: Vagrant machine identities and SSH keys;
+- `lab.lock`: an exclusive lock held for the full command, including the entire Jepsen test;
+- `vagrant-initialized`: prevents re-importing old machine identities after VM deletion.
+
+These are local runtime files, never committed to Git. VM disks remain in the system
+libvirt storage pool. Build exports and test results stay in the invoking checkout.
+Use the same `XDG_STATE_HOME` in all agent sessions; changing it selects separate state.
+
+VM operations (including status), builds, cache verification/pruning, and tests wait
+for this shared lock. `lab:run` holds it continuously from the build through VM startup
+and the smoke test. This prevents another agent from stopping, provisioning, or using
+the VMs during a test, and protects the shared Podman build tag.
+
+On first use, the wrapper looks for existing `infra/.vagrant/` state in this repository's
+registered Git worktrees and copies it, including SSH keys, into the shared directory.
+It leaves the original files intact. Conflicting machine identities across worktrees
+cause an error instead of choosing a set of VMs. Separate clones are not searched:
+copy their existing state to the shared `vagrant/` directory before first use if needed.
+
+Update every worktree to this task implementation before running agents concurrently:
+older tasks still use checkout-local locks. Use the mise tasks for lab operations;
+raw `vagrant` commands and direct script invocation bypass the shared wrapper.
+Do not delete the shared state or lock file while commands are running.
+
 ## First Run
 
 From the repository root:
@@ -108,7 +137,7 @@ To view the results, run `lein run serve` from `jepsen/`.
 - `build/build.sh`: build, smoke test, and packaging inside the container.
 - `scripts/build.sh` and `scripts/plugins.sh`: build invocation and plugin installation.
 - `scripts/test.py`: runs Jepsen and parses the Vagrant SSH configuration using
-  the Python standard library. Mise tasks invoke the scripts directly.
+  the Python standard library. Mise tasks invoke it through `scripts/lab.py`, which owns shared state and locking.
 - `jepsen/project.clj`: a single Leiningen project. `:source-paths` directly includes
   both subtrees. Nested `project.clj` files are not read automatically. When updating
   upstream, compare its external dependencies with our `project.clj`.
@@ -116,7 +145,7 @@ To view the results, run `lein run serve` from `jepsen/`.
 - `jepsen/resources/`: PostgreSQL configuration files.
 
 Generated files are not committed: `.cache/`, `infra/.vagrant/`, `jepsen/target/`,
-and `jepsen/store/`. There are no separate `.state/`, `results/`, or `lab.lock.toml` files.
+and `jepsen/store/`, plus the shared runtime state described above.
 
 ## Reproducibility and Build
 

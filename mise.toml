@@ -81,44 +81,26 @@ run = "bash scripts/plugins.sh"
 
 [tasks."vm:up"]
 description = "Create and provision all five Debian VMs"
-dir = "infra"
-run = """
-mkdir -p ../.cache
-flock ../.cache/lab.lock vagrant up
-"""
+run = "python3 scripts/lab.py vagrant up"
 
 [tasks."vm:provision"]
-dir = "infra"
-run = """
-mkdir -p ../.cache
-flock ../.cache/lab.lock vagrant provision
-"""
+run = "python3 scripts/lab.py vagrant provision"
 
 [tasks."vm:status"]
-dir = "infra"
-run = "vagrant status"
+run = "python3 scripts/lab.py vagrant status"
 
 [tasks."vm:halt"]
 description = "Shut down all five VMs; keep their disks and data"
-dir = "infra"
-run = """
-mkdir -p ../.cache
-flock ../.cache/lab.lock vagrant halt
-"""
+run = "python3 scripts/lab.py vagrant halt"
 
 [tasks."vm:destroy"]
 description = "Destroy all five VMs; keep builds and Jepsen store"
-dir = "infra"
-run = """
-mkdir -p ../.cache
-flock ../.cache/lab.lock vagrant destroy --force
-"""
+run = "python3 scripts/lab.py vagrant destroy --force"
 
 [tasks.build]
 description = "Build and export PostgreSQL + OrioleDB using Podman's layer cache"
 run = """
-mkdir -p .cache
-flock .cache/lab.lock bash scripts/build.sh
+python3 scripts/lab.py bash scripts/build.sh
 """
 
 [tasks."cache:list"]
@@ -129,15 +111,13 @@ run = "cat .cache/artifacts/current/build-info.json"
 
 [tasks."cache:verify"]
 run = """
-mkdir -p .cache
-flock .cache/lab.lock bash -c 'cd .cache/artifacts/current && sha256sum --check SHA256SUMS'
+python3 scripts/lab.py bash -c 'cd .cache/artifacts/current && sha256sum --check SHA256SUMS'
 """
 
 [tasks."cache:prune"]
 description = "Remove dangling lab images; Podman asks for confirmation"
 run = """
-mkdir -p .cache
-flock .cache/lab.lock podman image prune --filter label=io.jepsen.orioledb.build=true
+python3 scripts/lab.py podman image prune --filter label=io.jepsen.orioledb.build=true
 """
 
 [tasks."test:smoke"]
@@ -147,23 +127,26 @@ run = "mise run test:run -- --time-limit 30 --concurrency 4 --rate 10 --nemesis 
 [tasks."test:run"]
 description = "Run Jepsen on n1; additional arguments go to the Jepsen CLI"
 run = """
-mkdir -p .cache
-flock .cache/lab.lock python3 scripts/test.py
+python3 scripts/lab.py python3 scripts/test.py
 """
 
 [tasks."lab:run"]
 description = "Build, create five VMs, and run a smoke test on n1"
 run = """
-mise run build
-mise run vm:up
-mise run test:smoke
+python3 scripts/lab.py bash -eu -c '
+  bash scripts/build.sh
+  (cd infra && vagrant up)
+  python3 scripts/test.py --time-limit 30 --concurrency 4 --rate 10 --nemesis none
+'
 """
 
 [tasks.check]
 description = "Check task code and the Clojure adapter"
 run = """
 for script in scripts/*.sh infra/provision.sh build/build.sh; do bash -n "$script"; done
-PYTHONPYCACHEPREFIX=.cache/pycache python3 -m py_compile scripts/test.py
+export PYTHONPYCACHEPREFIX="$PWD/.cache/pycache"
+python3 -m py_compile scripts/test.py scripts/lab.py
+python3 -m unittest discover -s scripts/tests
 cd jepsen
 lein test
 lein check
