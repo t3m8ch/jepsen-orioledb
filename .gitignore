@@ -6,3 +6,4 @@
 /jepsen/.nrepl-port
 .clj-kondo
 .lsp
+__pycache__/
