@@ -12,23 +12,55 @@
       (is (str/includes? config "unix_socket_directories = '/var/lib/jepsen'"))))
   (is (= (db/cluster-config {}) (db/cluster-config {:engine :orioledb}))))
 
-(deftest cluster-probes-actual-access-method
-  (doseq [[engine expected] [[:postgres "heap"] [:orioledb "orioledb"]]
-          actual [expected "wrong-engine"]]
-    (let [statements (atom [])
-          started (atom nil)
-          test {:engine engine}]
-      (with-redefs [db/start! #(reset! started %)
-                    db/sql! (fn [_ statement]
-                              (swap! statements conj statement)
-                              {:amname actual})]
-        (if (= expected actual)
-          (is (nil? (db/check-cluster! test)))
-          (let [error (try (db/check-cluster! test) nil
-                           (catch clojure.lang.ExceptionInfo e e))]
-            (is (= {:expected expected :actual actual} (ex-data error))))))
-      (is (= test @started))
-      (is (= (= engine :orioledb)
-             (boolean (some #{"CREATE EXTENSION orioledb"} @statements))))
-      (is (some #{"CREATE TABLE public.jepsen_engine_probe (id int PRIMARY KEY)"} @statements))
-      (is (= "DROP TABLE public.jepsen_engine_probe" (last @statements))))))
+(def engine-probe-query
+  (str "SELECT am.amname FROM pg_class c JOIN pg_am am ON am.oid=c.relam "
+       "WHERE c.oid='public.jepsen_engine_probe'::regclass"))
+
+(def create-probe "CREATE TABLE public.jepsen_engine_probe (id int PRIMARY KEY)")
+(def drop-probe "DROP TABLE public.jepsen_engine_probe")
+(def create-extension "CREATE EXTENSION orioledb")
+
+(defn with-cluster-stub [actual run-test]
+  (let [statements (atom [])]
+    (with-redefs [db/start! (fn [_])
+                  db/sql! (fn [_ statement]
+                            (swap! statements conj statement)
+                            (cond
+                              (= engine-probe-query statement) {:amname actual}
+                              (#{create-probe drop-probe create-extension} statement) nil
+                              :else (throw (ex-info "Unexpected SQL in cluster probe"
+                                                    {:statement statement}))))]
+      (run-test statements))))
+
+(deftest cluster-accepts-matching-access-method
+  (doseq [[engine actual] [[:postgres "heap"] [:orioledb "orioledb"]]]
+    (testing (str "engine=" engine ", actual=" actual)
+      (with-cluster-stub actual
+        (fn [statements]
+          ;; Any exception fails the test; the return value is not a contract.
+          (db/check-cluster! {:engine engine})
+          (is (some #{create-probe} @statements))
+          (is (some #{engine-probe-query} @statements))
+          (is (= drop-probe (last @statements))))))))
+
+(deftest cluster-rejects-mismatched-access-method
+  (doseq [[engine expected] [[:postgres "heap"] [:orioledb "orioledb"]]]
+    (testing (str "engine=" engine ", expected=" expected ", actual=wrong-engine")
+      (with-cluster-stub "wrong-engine"
+        (fn [statements]
+          (let [error (try
+                        (db/check-cluster! {:engine engine})
+                        nil
+                        (catch clojure.lang.ExceptionInfo e e))]
+            (is (= {:expected expected :actual "wrong-engine"} (ex-data error))))
+          (is (some #{create-probe} @statements))
+          (is (= drop-probe (last @statements))))))))
+
+(deftest cluster-creates-extension-only-for-orioledb
+  (doseq [[engine actual extension?] [[:postgres "heap" false]
+                                     [:orioledb "orioledb" true]]]
+    (testing (str "engine=" engine ", extension?=" extension?)
+      (with-cluster-stub actual
+        (fn [statements]
+          (db/check-cluster! {:engine engine})
+          (is (= extension? (boolean (some #{create-extension} @statements)))))))))
