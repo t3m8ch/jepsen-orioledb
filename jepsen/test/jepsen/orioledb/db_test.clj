@@ -16,6 +16,19 @@
   (str "SELECT am.amname FROM pg_class c JOIN pg_am am ON am.oid=c.relam "
        "WHERE c.oid='public.jepsen_engine_probe'::regclass"))
 
+(deftest buffer-settings-are-optional-and-orioledb-only
+  (doseq [engine [:postgres :orioledb]]
+    (let [config (db/cluster-config {:engine engine})]
+      (is (not (str/includes? config "orioledb.main_buffers")))
+      (is (not (str/includes? config "orioledb.undo_buffers")))))
+  (doseq [[option guc] [[:main-buffers "main_buffers"] [:undo-buffers "undo_buffers"]]]
+    (is (str/includes? (db/cluster-config {option "32MB"})
+                       (str "orioledb." guc " = '32MB'\n"))))
+  (let [config (db/cluster-config {:engine :postgres
+                                   :main-buffers "8MB" :undo-buffers "32MB"})]
+    (is (not (str/includes? config "orioledb.main_buffers")))
+    (is (not (str/includes? config "orioledb.undo_buffers")))))
+
 (def create-probe "CREATE TABLE public.jepsen_engine_probe (id int PRIMARY KEY)")
 (def drop-probe "DROP TABLE public.jepsen_engine_probe")
 (def create-extension "CREATE EXTENSION orioledb")

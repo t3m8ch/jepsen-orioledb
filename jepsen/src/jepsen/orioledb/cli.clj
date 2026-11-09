@@ -92,6 +92,12 @@
     [nil "--postgres-user USER" "Database user" :default "postgres"]
     [nil "--postgres-port PORT" "Database port" :default 5432 :parse-fn parse-long]
     [nil "--postgres-sslmode MODE" "JDBC SSL mode" :default "disable"]
+    [nil "--main-buffers SIZE" "OrioleDB main buffer size, e.g. 8MB (server default if omitted; ignored with --engine postgres)"
+     :validate [#(boolean (re-matches #"[1-9][0-9]*(?:kB|MB|GB|TB)" %))
+                "Must be a positive integer followed by kB, MB, GB, or TB"]]
+    [nil "--undo-buffers SIZE" "OrioleDB undo buffer size, e.g. 32MB (server default if omitted; ignored with --engine postgres)"
+     :validate [#(boolean (re-matches #"[1-9][0-9]*(?:kB|MB|GB|TB)" %))
+                "Must be a positive integer followed by kB, MB, GB, or TB"]]
     ["-r" "--rate HZ" "Approximate requests per second"
      :default 10
      :parse-fn parse-double
