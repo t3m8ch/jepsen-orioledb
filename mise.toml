@@ -98,6 +98,14 @@ flock ../.cache/lab.lock vagrant provision
 dir = "infra"
 run = "vagrant status"
 
+[tasks."vm:halt"]
+description = "Shut down all five VMs; keep their disks and data"
+dir = "infra"
+run = """
+mkdir -p ../.cache
+flock ../.cache/lab.lock vagrant halt
+"""
+
 [tasks."vm:destroy"]
 description = "Destroy all five VMs; keep builds and Jepsen store"
 dir = "infra"

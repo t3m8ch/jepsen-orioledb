@@ -25,6 +25,8 @@ Project tasks do not change system service settings or install system packages.
 `vagrant-libvirt` manages the storage pool. If the `default` pool does not exist, the provider
 creates it in `/var/lib/libvirt/images/vagrant`; this path is set in the `Vagrantfile`.
 `vm:destroy` deletes the VMs but retains the pool and base box disk for the next run.
+`vm:halt` shuts down all five VMs to free RAM while keeping their disks and data.
+Start them again with `vm:up`.
 The `192.168.77.0/24` network must be available on the host. Each VM has a separate libvirt
 management interface and an isolated test network; synced folders are disabled.
 
@@ -59,6 +61,7 @@ mise run vm:provision
 mise run vm:status
 mise run test:smoke
 mise run test:run -- --time-limit 120 --concurrency 16 --rate 50 --nemesis kill,pause
+mise run vm:halt
 mise run vm:destroy
 ```
 
