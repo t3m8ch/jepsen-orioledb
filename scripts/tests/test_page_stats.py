@@ -18,9 +18,9 @@ class PageStatsTest(unittest.TestCase):
             mode = root / "mode"
             client = root / "psql"
             client.write_text('#!/bin/bash\ncase "$(cat "' + str(mode) + '\")" in\n'
-                              'ok) echo \'[{"pool_name":"main","busy_pages":12,"dirty_pages":3,"all_pages":100}]\';;\n'
+                              'ok) echo \'[{"pool_name":"main","busy_pages":12,"dirty_pages":3,"all_pages":100},\n{"pool_name":"catalog","busy_pages":1}]\';;\n'
                               'fail) exit 2;;\n'
-                              'hang) sleep 60;;\nesac\n')
+                              'hang) exec sleep 60;;\nesac\n')
             client.chmod(0o755)
             log = root / "stats.jsonl"
             mode.write_text("ok")
