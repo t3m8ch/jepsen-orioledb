@@ -7,6 +7,7 @@
             [jepsen.control :as c]
             [jepsen.control.util :as cu]
             [jepsen.db :as db]
+            [jepsen.orioledb.page-stats :as page-stats]
             [jepsen.postgres.client :as pg-client]
             [next.jdbc :as jdbc]
             [next.jdbc.result-set :as rs]))
@@ -130,9 +131,12 @@
   (reify
     db/DB
     (setup! [_ test _node]
+      (page-stats/stop!)
       (install! test)
+      (page-stats/prepare!)
       (setup-cluster! test))
     (teardown! [_ _test _node]
+      (page-stats/stop!)
       (signal! "CONT")
       (when (running?)
         (c/sudo "postgres"
@@ -150,14 +154,16 @@
     (resume! [_ _test _node] (signal! "CONT"))
 
     db/LogFiles
-    (log-files [_ _test _node]
+    (log-files [_ test _node]
+      (page-stats/stop!)
       ;; PGDATA is 0700; stage copies readable by the SSH user for Jepsen download.
       (c/su
        (doseq [filename ["postgresql.conf" "pg_hba.conf"]]
          (when (cu/exists? (str data-dir "/" filename))
            (c/exec :cp (str data-dir "/" filename) (str log-dir "/" filename))
            (c/exec :chmod "0644" (str log-dir "/" filename)))))
-      {log-file "postgresql.log"
+      (cond-> {log-file "postgresql.log"
        build-info-file "build-info.json"
        (str log-dir "/postgresql.conf") "postgresql.conf"
-       (str log-dir "/pg_hba.conf") "pg_hba.conf"})))
+       (str log-dir "/pg_hba.conf") "pg_hba.conf"}
+        (page-stats/enabled? test) (assoc page-stats/log-file "page-stats.jsonl")))))

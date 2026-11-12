@@ -84,3 +84,12 @@
     (doseq [size ["0MB" "-1MB" "8" "8MiB" "1.5MB" "8MB\nfsync=off" "8MB'"]]
       (is (seq (:errors (tools-cli/parse-opts [flag size] cli/cli-opts)))))
     (is (seq (:errors (tools-cli/parse-opts [flag] cli/cli-opts))))))
+
+(deftest page-stats-interval-validation
+  (is (nil? (get-in (tools-cli/parse-opts [] cli/cli-opts) [:options :page-stats-interval])))
+  (doseq [value ["1" "0.25" "1e2"]]
+    (let [{:keys [options errors]} (tools-cli/parse-opts ["--page-stats-interval" value] cli/cli-opts)]
+      (is (empty? errors))
+      (is (= (Double/parseDouble value) (:page-stats-interval options)))))
+  (doseq [value ["0" "-1" "NaN" "Infinity" "-Infinity" "abc" "1e999"]]
+    (is (seq (:errors (tools-cli/parse-opts ["--page-stats-interval" value] cli/cli-opts))))))

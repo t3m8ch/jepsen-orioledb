@@ -11,6 +11,7 @@
             [jepsen.postgres.cli :as pg-cli]
             [jepsen.sql :as sql]
             [jepsen.tests :as tests]
+            [jepsen.orioledb.page-stats :as page-stats]
             [jepsen.orioledb.db :as db]))
 
 (defn required-env [key]
@@ -54,9 +55,12 @@
             :os os/noop
             :db database
             :client (:client workload)
-            :nemesis (:nemesis nemesis)
+            :nemesis (if (page-stats/enabled? (assoc opts :engine engine))
+                       (page-stats/wrap-nemesis (:nemesis nemesis))
+                       (:nemesis nemesis))
             :checker (checker/compose
-                      {:stats (checker/stats)
+                      {:page-stats (page-stats/plot-checker)
+                       :stats (checker/stats)
                        :exceptions (checker/unhandled-exceptions)
                        :perf (checker/perf {:nemeses (:perf nemesis)})
                        :workload (:checker workload)})
@@ -92,6 +96,9 @@
     [nil "--postgres-user USER" "Database user" :default "postgres"]
     [nil "--postgres-port PORT" "Database port" :default 5432 :parse-fn parse-long]
     [nil "--postgres-sslmode MODE" "JDBC SSL mode" :default "disable"]
+    [nil "--page-stats-interval SECONDS" "Collect and plot OrioleDB pool occupancy (disabled if omitted; ignored with --engine postgres)"
+     :parse-fn #(Double/parseDouble %)
+     :validate [#(and (Double/isFinite %) (pos? %)) "Must be a finite positive duration"]]
     [nil "--main-buffers SIZE" "OrioleDB main buffer size, e.g. 8MB (server default if omitted; ignored with --engine postgres)"
      :validate [#(boolean (re-matches #"[1-9][0-9]*(?:kB|MB|GB|TB)" %))
                 "Must be a positive integer followed by kB, MB, GB, or TB"]]
