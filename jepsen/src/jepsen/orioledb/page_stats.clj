@@ -86,20 +86,73 @@
             (line-seq reader)))
     []))
 
+(def write-pattern
+  #"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d+ UTC) \[(\d+)\] DEBUG:  Wrote (plain disk page|disk page): checkpoint (\d+)(?: size (\d+))?$")
+
+(defn parse-write [line node anchor]
+  (when-let [[_ timestamp pid variant checkpoint size] (re-matches write-pattern line)]
+    (when (= (= variant "disk page") (boolean size))
+      (try
+        (let [instant (java.time.Instant/parse
+                       (str (str/replace (subs timestamp 0 (- (count timestamp) 4)) " " "T") "Z"))
+              origin (java.time.Instant/parse (:timestamp anchor))
+              elapsed (+ (:elapsed anchor)
+                         (/ (.toNanos (java.time.Duration/between origin instant)) 1e9))]
+          {:timestamp (str instant) :elapsed elapsed :node node
+           :pid (parse-long pid) :checkpoint (parse-long checkpoint)
+           :size (when size (parse-long size))})
+        (catch Exception _ nil)))))
+
+(defn write-events [test]
+  (vec
+   (mapcat
+    (fn [node]
+      (let [samples (read-samples (store/path test (name node) "page-stats.jsonl"))
+            log (io/file (store/path test (name node) "postgresql.log"))]
+        (when (and (seq samples) (.exists log))
+          (with-open [r (io/reader log)]
+            (into [] (keep #(parse-write % (name node) (first samples))) (line-seq r))))))
+    (:nodes test))))
+
+(defn marker-series [events samples]
+  ;; One marker per second keeps dense writes readable; JSONL retains every event.
+  (let [lo (apply min (map :elapsed samples))
+        hi (apply max (map :elapsed samples))]
+    {:title "Observed page-write attempts (1s groups; pool unknown)"
+     :with 'impulses
+     :data (->> events (filter #(<= lo (:elapsed %) hi))
+                (group-by #(long (Math/floor (:elapsed %))))
+                vals (mapv (fn [group] [(:elapsed (first group)) 1])))}))
+
 (defn plot! [test]
   (let [samples (mapcat #(read-samples (store/path test (name %) "page-stats.jsonl"))
-                        (:nodes test))]
+                        (:nodes test))
+        events (when (:trace-page-writes test) (write-events test))]
+    (when (:trace-page-writes test)
+      (with-open [w (io/writer (store/path! test "page-writes.jsonl"))]
+        (doseq [event events] (.write w (str (json/generate-string event) "\n")))))
     (when (seq samples)
       (doseq [[pool filename] pools
               :let [data (series samples pool)]
               :when (some #(Double/isFinite (double (second %))) (mapcat :data data))]
         (perf/plot! {:preamble [[:set :terminal :pngcairo :noenhanced :size (str "1000,500")]
                                [:set :output (str (store/path! test (str "page-stats-" filename ".png"))) ]
-                               [:set :key :outside :right]
+                               (if (:trace-page-writes test)
+                                 [:set :key :outside :below :center]
+                                 [:set :key :outside :right])
                                [:set :xlabel "Elapsed time (s)"]
                                [:set :ylabel "Pages"]
                                [:set :title (str "OrioleDB " pool " occupancy")]]
-                     :series data})))))
+                     :series (cond-> data
+                               (seq events)
+                               (conj (let [top (apply max
+                                                      (filter #(Double/isFinite (double %))
+                                                              (map second (mapcat :data data))))]
+                                       (-> (marker-series events samples)
+                                           (assoc :with 'points :pointtype 2 :linecolor "#999999")
+                                           (update :data
+                                                   #(mapv (fn [[x _]] [x (* 1.08 (max 1 top))]) %))))))})))))
+
 
 (defn plot-checker []
   (reify checker/Checker
