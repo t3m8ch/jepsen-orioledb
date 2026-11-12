@@ -24,7 +24,7 @@ Review identified PostgreSQL `json_agg` multiline output as incompatible with JS
 
 All runs were sequential via `mise run test:run`, which holds the shared repository lab lock. No VM reset, destruction, or interruption of another test was performed.
 
-Common explicit settings: `--engine orioledb --isolation read-committed --concurrency 4 --rate 20 --key-count 100 --main-buffers 8MB --undo-buffers 32MB --page-stats-interval 1`. Remaining workload options use CLI defaults, fully preserved in each run's `test.edn`.
+Common explicit settings: `--engine orioledb --isolation read-committed --concurrency 4 --rate 20 --key-count 100 --main-buffers 8MB --undo-buffers 32MB --page-stats-interval 1`. Remaining workload options use CLI defaults, fully preserved in each run's `test.jepsen`.
 
 | Workload | Time limit | Nemesis | Store directory under `jepsen/store/` |
 | --- | --- | --- | --- |
@@ -47,3 +47,17 @@ All selected runs exported node `192.168.121.178/page-stats.jsonl` and
 and visually inspected. Baseline plots were regenerated from the original
 collected JSONL after disabling gnuplot enhanced text (to preserve underscores)
 and moving the legend outside the data region.
+
+
+An additional internal run used the same common settings, overriding isolation to
+`repeatable-read`, time limit to 40 s (+10 s recovery allowance), and nemesis to
+`pause --nemesis-interval 5`. Store:
+`orioledb-internal-repeatable-read/2026-11-12T13:09:15.136865754+04:00`.
+It finished with `:valid? true`, exporting 43 samples (41 available, 2 timed-out
+samples at elapsed 11.040138 and 15.060138 s). All three PNGs were inspected and
+show gaps with subsequent recovery. The earlier read-committed invalid verdict
+remains recorded above.
+
+After the last run, a read-only VM check under the repository lock confirmed no
+collector pidfile and no collector Bash or psql process remained. The main
+checkout and its unrelated `.nrepl-port` were not modified.
