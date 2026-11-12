@@ -388,3 +388,22 @@ never zero occupancy. Empty logs or pools with no measurements produce no plot;
 plotting errors are reported under `:page-stats` without changing the workload's
 validity verdict. These are occupancy snapshots, not cumulative write or eviction
 counters; falling occupancy alone does not establish eviction activity.
+
+Add `--trace-page-writes` to enable global DEBUG1 logging before startup and
+annotate these plots with observed page-write attempts. It automatically sets
+`--page-stats-interval 1` unless an explicit interval is supplied. Both options
+are saved in test metadata and ignored with `--engine postgres`; ordinary runs
+retain their logging behavior.
+
+Both `Wrote plain disk page` and `Wrote disk page` messages are exported to
+`page-writes.jsonl` at the run root, including UTC timestamp, elapsed seconds,
+node, PID, checkpoint and optional size. The original node `postgresql.log` is
+retained. Events use each node's first sample UTC timestamp and elapsed value as
+their time reference, not log download time. This assumes the VM wall clock
+does not jump during the run; sampling itself still uses monotonic uptime.
+Markers group events per second within the sampled time range; the JSONL retains
+all events, including startup events outside that range. Markers share all pool
+plots because the messages do not identify a pool. These observations are
+post-attempt logging points, not proof of device persistence or successful fsync,
+and do not count clean evictions. Empty streams add no markers. Export/plot
+errors are diagnostic and do not change the correctness verdict.
