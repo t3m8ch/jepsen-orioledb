@@ -43,5 +43,24 @@ postgres soft nofile 65536
 postgres hard nofile 65536
 LIMITS
 
+# Keep the helper outside the installation removed by Jepsen teardown.
+cat > /usr/local/bin/lab-psql <<'LAB_PSQL'
+#!/usr/bin/env bash
+set -u
+client=/opt/jepsen/pgsql/bin/psql
+if [[ ! -x $client ]]; then
+  echo "lab-psql: lab PostgreSQL client is missing. Start a Jepsen test from the host to install and start the local database." >&2
+  exit 1
+fi
+export PGCONNECT_TIMEOUT=5
+"$client" -X --no-password --host=127.0.0.1 --port=5432 --username=postgres --dbname=postgres "$@"
+status=$?
+if [[ $status == 2 ]]; then
+  echo "lab-psql: cannot connect to the local test database. It must be running on this VM; Jepsen installs and starts it during a test and removes it afterwards. Check /var/log/jepsen/postgresql.log." >&2
+fi
+exit "$status"
+LAB_PSQL
+chmod 0755 /usr/local/bin/lab-psql
+
 # No packaged PostgreSQL and no service competing with the Jepsen adapter.
 systemctl enable --now ssh chrony

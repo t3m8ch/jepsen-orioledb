@@ -100,6 +100,26 @@ names show usage; unavailable VMs report their state and suggest `mise run vm:up
 It uses the shared runtime state and holds the lab lock until you exit the shell,
 so other lab tasks wait while the session is open.
 
+### Open the local database
+
+Inside a provisioned VM shell, run:
+
+```sh
+lab-psql
+```
+
+This opens the lab build's psql client on `127.0.0.1:5432`, using database
+`postgres` and user `postgres`, for either PostgreSQL or OrioleDB. Extra psql
+arguments are supported, for example `lab-psql -c 'SELECT version();'`.
+The local test database must already be running on that VM. Jepsen currently
+starts it only on n1 during a test and removes it (including the client) at
+teardown; provisioning alone does not start a database. The command reports
+missing clients and unavailable databases with guidance.
+
+The host test holds the lab lock, so open a separate SSH session using Vagrant's
+connection settings before starting it; `vm:ssh` waits for the test to finish.
+For VMs provisioned before this command was added, run `mise run vm:provision`.
+
 ### Restore VMs without recreating them
 
 After `vm:up` / `vm:provision`, and **before running Jepsen**, save a clean baseline:
