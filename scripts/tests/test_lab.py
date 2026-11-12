@@ -1,10 +1,14 @@
 """Exercise shared state and cross-checkout locking without booting VMs."""
 import fcntl
+import json
 import os
+import select
+import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 
@@ -74,6 +78,50 @@ class SharedLabTests(unittest.TestCase):
         self.assertTrue((self.base / "home/.local/state/jepsen-orioledb/vagrant").is_dir())
         self.env["XDG_STATE_HOME"] = "relative"
         self.assertNotEqual(self.run_lab(self.repo, "true").returncode, 0)
+
+    def test_vm_ssh_runs_during_locked_operation_without_holding_lock(self):
+        shutil.copyfile(SCRIPT.with_name("ssh.py"), self.other / "scripts/ssh.py")
+        binary = self.base / "bin"
+        binary.mkdir()
+        stub = binary / "vagrant"
+        stub.write_text(
+            f"#!{sys.executable}\n"
+            "import json, os, sys\n"
+            "if sys.argv[1] == 'status':\n"
+            "    print('0,' + sys.argv[2] + ',state,running')\n"
+            "else:\n"
+            "    print(json.dumps([sys.argv[1:], os.getcwd(), "
+            "os.environ['VAGRANT_DOTFILE_PATH']]), flush=True)\n"
+            "    sys.stdin.read()\n"
+        )
+        stub.chmod(0o755)
+        self.env["PATH"] = str(binary) + os.pathsep + self.env["PATH"]
+        config = tomllib.loads((SCRIPT.parent.parent / "mise.toml").read_text())
+        command = shlex.split(config["tasks"]["vm:ssh"]["run"]) + ["n3"]
+        self.state.mkdir(parents=True)
+        with (self.state / "lab.lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            shell = subprocess.Popen(command, cwd=self.other, env=self.env,
+                                     stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                     stderr=subprocess.PIPE, text=True)
+            try:
+                self.assertTrue(select.select([shell.stdout], [], [], 3)[0],
+                                "vm:ssh waits for the lab lock")
+                line = shell.stdout.readline()
+                self.assertTrue(line, "vm:ssh exited before starting the shell")
+                self.assertEqual(json.loads(line), [
+                    ["ssh", "n3"], str(self.other / "infra"), str(self.state / "vagrant")])
+                self.assertIsNone(shell.poll())
+                fcntl.flock(lock, fcntl.LOCK_UN)
+                # A new operation can take the lock while the shell stays open.
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                _, stderr = shell.communicate(timeout=3)
+                self.assertEqual(shell.returncode, 0, stderr)
+                self.assertNotIn("Waiting for lab lock", stderr)
+            finally:
+                if shell.poll() is None:
+                    shell.kill()
+                shell.communicate(timeout=3)
 
     def test_vagrant_runs_in_infra_and_preserves_arguments(self):
         binary = self.base / "bin"

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Open a Vagrant SSH shell; invoke through lab.py for state and locking."""
+"""Open a Vagrant SSH shell; invoke through lab.py --no-lock for shared state."""
 import argparse
 import os
 import subprocess
@@ -24,7 +24,7 @@ def main():
         state = states[-1] if states else "unknown"
         raise SystemExit(f"VM {args.vm} is unavailable (state: {state}). "
                          "Run mise run vm:up, then retry.")
-    # Inherit the terminal, signals, exit status, and lab lock for the full shell.
+    # Inherit the terminal, signals, and exit status for the full shell.
     os.execvp("vagrant", ["vagrant", "ssh", args.vm])
 
 

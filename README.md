@@ -42,10 +42,11 @@ These are local runtime files, never committed to Git. VM disks remain in the sy
 libvirt storage pool. Build exports and test results stay in the invoking checkout.
 Use the same `XDG_STATE_HOME` in all agent sessions; changing it selects separate state.
 
-VM operations (including status), builds, cache verification/pruning, and tests wait
-for this shared lock. `lab:run` holds it continuously from the build through VM startup
-and the smoke test. This prevents another agent from stopping, provisioning, or using
-the VMs during a test, and protects the shared Podman build tag.
+VM operations (including status, except `vm:ssh`), builds, cache verification/pruning,
+and tests wait for this shared lock. `lab:run` holds it continuously from the build
+through VM startup and the smoke test. This prevents other lab tasks from stopping
+or provisioning the VMs or starting a competing test, and protects the shared Podman
+build tag. SSH sessions remain available for debugging during a test.
 
 Update every worktree to this task implementation before running agents concurrently:
 older tasks still use checkout-local locks. Use the mise tasks for lab operations;
@@ -97,8 +98,10 @@ mise run vm:ssh -- n3
 
 The task uses Vagrant's connection settings and generated SSH key. Missing or invalid
 names show usage; unavailable VMs report their state and suggest `mise run vm:up`.
-It uses the shared runtime state and holds the lab lock until you exit the shell,
-so other lab tasks wait while the session is open.
+It uses the shared runtime state without taking the lab lock, so you can open a shell
+while tests run. Other lab tasks can proceed while the shell is open; `vm:halt`,
+`vm:reset`, or `vm:destroy` can interrupt the session. Commands you run in the shell
+can affect a running test.
 
 ### Open the local database
 
@@ -290,10 +293,10 @@ After the next build, the `experiment-1` tag will continue to point to the saved
 artifacts. Delete a specific saved build using the standard
 `podman image rm localhost/jepsen-orioledb:experiment-1` command.
 
-Mise tasks acquire a common `.cache/lab.lock` lock: builds, tests, VM operations,
-and cache changes run sequentially. `flock` runs the command
-under the lock and releases it upon completion. The scripts themselves do not manage
-locks; run operations through `mise run`.
+Mise tasks use `scripts/lab.py` to acquire the shared lab lock described above:
+builds, tests, VM operations, and cache changes run sequentially. The wrapper holds
+the lock until the command exits. `vm:ssh` passes `--no-lock` to reuse the shared
+Vagrant state while allowing concurrent operations. Run operations through `mise run`.
 Independent concurrent testbeds require a separate
 host because the VM names and subnet are fixed here.
 

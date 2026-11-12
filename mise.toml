@@ -91,7 +91,7 @@ run = "python3 scripts/lab.py vagrant status"
 
 [tasks."vm:ssh"]
 description = "Open an interactive shell on a selected lab VM (n1–n5)"
-run = "python3 scripts/lab.py python3 scripts/ssh.py"
+run = "python3 scripts/lab.py --no-lock python3 scripts/ssh.py"
 
 [tasks."vm:halt"]
 description = "Shut down all five VMs; keep their disks and data"
