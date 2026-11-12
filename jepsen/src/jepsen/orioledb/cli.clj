@@ -31,7 +31,10 @@
 (def workloads (sql/workloads {:open open :error-fn pg-client/error-fn}))
 
 (defn orioledb-test [opts]
-  (let [engine (or (:engine opts) :orioledb)
+  (let [opts (cond-> opts
+               (and (:trace-page-writes opts) (nil? (:page-stats-interval opts)))
+               (assoc :page-stats-interval 1.0))
+        engine (or (:engine opts) :orioledb)
         artifact (required-env "LAB_ARTIFACT")
         host (required-env "LAB_SSH_HOST")
         database (db/database)
@@ -96,6 +99,7 @@
     [nil "--postgres-user USER" "Database user" :default "postgres"]
     [nil "--postgres-port PORT" "Database port" :default 5432 :parse-fn parse-long]
     [nil "--postgres-sslmode MODE" "JDBC SSL mode" :default "disable"]
+    [nil "--trace-page-writes" "Observe OrioleDB page-write attempts (DEBUG1); enables 1s occupancy sampling unless specified; ignored with --engine postgres"]
     [nil "--page-stats-interval SECONDS" "Collect and plot OrioleDB pool occupancy (disabled if omitted; ignored with --engine postgres)"
      :parse-fn #(Double/parseDouble %)
      :validate [#(and (Double/isFinite %) (pos? %)) "Must be a finite positive duration"]]
