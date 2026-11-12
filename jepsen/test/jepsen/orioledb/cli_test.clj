@@ -95,3 +95,15 @@
       (is (= (Double/parseDouble value) (:page-stats-interval options)))))
   (doseq [value ["0" "-1" "NaN" "Infinity" "-Infinity" "abc" "1e999"]]
     (is (seq (:errors (tools-cli/parse-opts ["--page-stats-interval" value] cli/cli-opts))))))
+
+(deftest tracing-defaults-sampling-and-preserves-explicit-interval
+  (with-redefs [cli/required-env environment
+                cli/artifact-checksum (constantly "checksum")]
+    (doseq [interval [nil 0.25]]
+      (let [opts {:trace-page-writes true :workload :append :isolation :read-committed
+                  :nemesis [] :nemesis-interval 5 :rate 10 :time-limit 1
+                  :concurrency 1 :key-count 10 :key-dist :uniform
+                  :max-txn-length 4 :max-writes-per-key 256}
+            test (cli/orioledb-test (cond-> opts interval (assoc :page-stats-interval interval)))]
+        (is (= (or interval 1.0) (:page-stats-interval test)))
+        (is (:trace-page-writes test))))))

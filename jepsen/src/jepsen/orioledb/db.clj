@@ -91,7 +91,12 @@
          "default_table_access_method = '" access-method "'\n"
          "unix_socket_directories = '/var/lib/jepsen'\n"
          (when (= "orioledb" access-method)
-           (str (when-let [size (:main-buffers test)]
+           (str (when (:trace-page-writes test)
+                  "log_min_messages = debug1
+log_timezone = 'UTC'
+log_line_prefix = '%m [%p] '
+")
+                (when-let [size (:main-buffers test)]
                   (str "orioledb.main_buffers = '" size "'\n"))
                 (when-let [size (:undo-buffers test)]
                   (str "orioledb.undo_buffers = '" size "'\n")))))))
