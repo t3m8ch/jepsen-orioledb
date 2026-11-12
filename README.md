@@ -356,3 +356,35 @@ mise run check
 This checks shell syntax, Jepsen test construction, node/network selection,
 and all Clojure namespaces. `cache:verify` checks binary cache integrity.
 Full verification requires `mise run lab:run` on a host with KVM/libvirt.
+
+### Page-pool occupancy
+
+Opt in to periodic OrioleDB snapshots and automatic PNG plots:
+
+```sh
+mise run test:run -- --engine orioledb --workload append --time-limit 60 --page-stats-interval 1
+```
+
+`--page-stats-interval SECONDS` accepts finite positive durations (including
+fractions), is saved in test metadata, and is disabled when omitted. It is ignored
+with `--engine postgres`. Sampling runs on the database VM independently of
+workload operations and correctness checking. Each query has a two-second server
+statement timeout and a three-second client deadline (with a one-second forced
+termination fallback); a fresh connection is used for each query. The interval is
+the delay between completed attempts, so slow or unavailable queries reduce the
+sampling frequency.
+
+The node log `page-stats.jsonl` contains UTC timestamps, elapsed seconds, availability,
+and every pool and column returned by `orioledb_page_stats()`. Elapsed time uses VM
+uptime calibrated to Jepsen's elapsed origin when the collector starts (subject to
+the short SSH startup delay); it does not depend on matching host/VM wall clocks.
+The collector and its children stop before final log export, and each run starts
+with a fresh log. Exported logs live under the node directory in the run store.
+
+The run automatically renders `page-stats-main.png`, `page-stats-free-tree.png`,
+and `page-stats-catalog.png` at the store root, with `busy_pages`, `dirty_pages`,
+and `all_pages` against elapsed seconds. Failed queries and absent pools are gaps,
+never zero occupancy. Empty logs or pools with no measurements produce no plot;
+plotting errors are reported under `:page-stats` without changing the workload's
+validity verdict. These are occupancy snapshots, not cumulative write or eviction
+counters; falling occupancy alone does not establish eviction activity.
