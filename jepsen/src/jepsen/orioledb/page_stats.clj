@@ -55,7 +55,8 @@
           (c/on-nodes test (fn [test _] (start! test)))
           (wrap-nemesis ready)
           (catch Throwable t
-            (c/on-nodes test (fn [_ _] (stop!)))
+            (try (c/on-nodes test (fn [_ _] (stop!)))
+                 (finally (nemesis/teardown! ready test)))
             (throw t)))))
     (invoke! [_ test op] (nemesis/invoke! delegate test op))
     (teardown! [_ test]
@@ -92,8 +93,9 @@
       (doseq [[pool filename] pools
               :let [data (series samples pool)]
               :when (some #(Double/isFinite (double (second %))) (mapcat :data data))]
-        (perf/plot! {:preamble [[:set :terminal :pngcairo :size (str "1000,500")]
+        (perf/plot! {:preamble [[:set :terminal :pngcairo :noenhanced :size (str "1000,500")]
                                [:set :output (str (store/path! test (str "page-stats-" filename ".png"))) ]
+                               [:set :key :outside :right]
                                [:set :xlabel "Elapsed time (s)"]
                                [:set :ylabel "Pages"]
                                [:set :title (str "OrioleDB " pool " occupancy")]]

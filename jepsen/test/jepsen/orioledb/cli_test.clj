@@ -29,6 +29,7 @@
                    :nemesis faults
                    :nemesis-interval 5
                    :rate 10
+                   :page-stats-interval 0.5
                    :time-limit 30
                    :concurrency 4
                    :key-count 10
@@ -42,6 +43,7 @@
                    :savepoints true
                    :wfr-keys? true})]
         (is (= (or engine :orioledb) (:engine test)))
+        (is (= 0.5 (:page-stats-interval test)))
         (is (= (str (name (or engine :orioledb)) "-append-read-committed")
                (:name test)))
         (is (= ["192.168.121.10"] (:nodes test)))

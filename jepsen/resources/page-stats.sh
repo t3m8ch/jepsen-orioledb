@@ -13,9 +13,10 @@ while true; do
   read -r uptime _ < /proc/uptime
   elapsed=$(awk -v now="$uptime" -v start="$initial_uptime" -v initial="$initial_elapsed" 'BEGIN {printf "%.6f", initial + now - start}')
   timestamp=$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)
-  if pools=$(timeout --kill-after=1 3 "$client" -X -q -A -t --no-password \
+  if pools=$(timeout --foreground --kill-after=1 3 "$client" -X -q -A -t --no-password \
       --host=127.0.0.1 --port="$port" --username=postgres --dbname=postgres \
       --set=ON_ERROR_STOP=1 --command='SELECT coalesce(json_agg(s), '\''[]'\''::json) FROM orioledb_page_stats() s' 2>/dev/null); then
+    pools=${pools//$'\n'/ }
     printf '{"timestamp":"%s","elapsed":%s,"available":true,"pools":%s}\n' "$timestamp" "$elapsed" "$pools" >> "$log"
   else
     printf '{"timestamp":"%s","elapsed":%s,"available":false,"error":"query-failed","pools":[]}\n' "$timestamp" "$elapsed" >> "$log"

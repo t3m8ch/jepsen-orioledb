@@ -55,3 +55,40 @@
         (spit (path test "n1" "page-stats.jsonl") "")
         (is (= {:valid? true} (checker/check (ps/plot-checker) test [] {}))))
       (finally (doseq [file (reverse (file-seq dir))] (io/delete-file file))))))
+
+(deftest disabled-empty-and-unavailable-do-not-fabricate-plots
+  (let [renders (atom [])]
+    (with-redefs [store/path (fn [& _] "unused")
+                  jepsen.checker.perf/plot! #(swap! renders conj %)
+                  ps/read-samples (constantly [])]
+      (is (= {:valid? true :disabled true}
+             (checker/check (ps/plot-checker) {:engine :postgres :page-stats-interval 1} [] {})))
+      (is (= {:valid? true}
+             (checker/check (ps/plot-checker) {:engine :orioledb :page-stats-interval 1 :nodes ["n1"]} [] {})))
+      (is (empty? @renders)))
+    (with-redefs [store/path (fn [& _] "unused")
+                  jepsen.checker.perf/plot! #(swap! renders conj %)
+                  ps/read-samples (constantly [{:elapsed 1 :available false :pools []}])]
+      (ps/plot! {:nodes ["n1"]})
+      (is (empty? @renders)))))
+
+(deftest nemesis-wrapper-cleans-up-on-success-and-start-failure
+  (doseq [fail-start? [false true]]
+    (let [events (atom [])
+          delegate (reify jepsen.nemesis/Nemesis
+                     (setup! [this _] (swap! events conj :setup) this)
+                     (invoke! [_ _ op] op)
+                     (teardown! [_ _] (swap! events conj :teardown)))
+          test {:nodes ["n1"]}]
+      (with-redefs [c/on-nodes (fn [test f] (f test "n1"))
+                    ps/start! (fn [_] (swap! events conj :start)
+                                (when fail-start? (throw (ex-info "start failed" {}))))
+                    ps/stop! #(swap! events conj :stop)]
+        (if fail-start?
+          (is (thrown-with-msg? clojure.lang.ExceptionInfo #"start failed"
+                               (jepsen.nemesis/setup! (ps/wrap-nemesis delegate) test)))
+          (let [ready (jepsen.nemesis/setup! (ps/wrap-nemesis delegate) test)]
+            (is (= {:f :pause} (jepsen.nemesis/invoke! ready test {:f :pause})))
+            (jepsen.nemesis/teardown! ready test)))
+        (is (= (if fail-start? [:setup :start :stop :teardown]
+                              [:setup :start :teardown :stop]) @events))))))
