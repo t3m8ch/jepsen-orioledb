@@ -89,6 +89,10 @@ run = "python3 scripts/lab.py vagrant provision"
 [tasks."vm:status"]
 run = "python3 scripts/lab.py vagrant status"
 
+[tasks."vm:ssh"]
+description = "Open an interactive shell on a selected lab VM (n1–n5)"
+run = "python3 scripts/lab.py python3 scripts/ssh.py"
+
 [tasks."vm:halt"]
 description = "Shut down all five VMs; keep their disks and data"
 run = "python3 scripts/lab.py vagrant halt"
@@ -153,7 +157,7 @@ description = "Check task code and the Clojure adapter"
 run = """
 for script in scripts/*.sh infra/provision.sh build/build.sh; do bash -n "$script"; done
 export PYTHONPYCACHEPREFIX="$PWD/.cache/pycache"
-python3 -m py_compile scripts/test.py scripts/lab.py scripts/snapshot.py
+python3 -m py_compile scripts/test.py scripts/lab.py scripts/snapshot.py scripts/ssh.py
 python3 -m unittest discover -s scripts/tests
 cd jepsen
 lein test

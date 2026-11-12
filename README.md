@@ -87,6 +87,19 @@ mise run vm:halt
 mise run vm:destroy
 ```
 
+### Open a VM shell
+
+Select any VM from `n1` through `n5`:
+
+```sh
+mise run vm:ssh -- n3
+```
+
+The task uses Vagrant's connection settings and generated SSH key. Missing or invalid
+names show usage; unavailable VMs report their state and suggest `mise run vm:up`.
+It uses the shared runtime state and holds the lab lock until you exit the shell,
+so other lab tasks wait while the session is open.
+
 ### Restore VMs without recreating them
 
 After `vm:up` / `vm:provision`, and **before running Jepsen**, save a clean baseline:
