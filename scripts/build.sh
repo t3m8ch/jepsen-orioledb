@@ -4,6 +4,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 mkdir -p .cache/artifacts
 output=$(mktemp -d "$PWD/.cache/artifacts/.export-XXXXXXXX")
+trap 'rm -rf -- "$output"' EXIT
 
 # Podman reuses cached layers and exports only the final stage's files.
 podman build --layers --force-rm --pull=missing --tag localhost/jepsen-orioledb:build \

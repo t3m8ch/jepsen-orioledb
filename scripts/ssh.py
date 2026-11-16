@@ -17,9 +17,11 @@ def main():
     if result.returncode:
         raise SystemExit(f"Cannot query {args.vm}. Run mise run vm:status to diagnose.\n"
                          + result.stderr.strip())
-    states = [line.split(",")[3] for line in result.stdout.splitlines()
-              if len(line.split(",")) >= 4
-              and line.split(",")[1:3] == [args.vm, "state"]]
+    states = []
+    for line in result.stdout.splitlines():
+        fields = line.split(",")
+        if len(fields) >= 4 and fields[1:3] == [args.vm, "state"]:
+            states.append(fields[3])
     if states != ["running"]:
         state = states[-1] if states else "unknown"
         raise SystemExit(f"VM {args.vm} is unavailable (state: {state}). "

@@ -47,6 +47,12 @@ class SshTests(unittest.TestCase):
                     self.invoke(["n1"], output)
                 self.execute.assert_not_called()
 
+    def test_status_parser_ignores_unrelated_and_incomplete_records(self):
+        output = ("\nmalformed\n0,n1,state\n0,n2,state,shutoff\n"
+                  "0,n1,provider-name,libvirt\n0,n1,state,running\n")
+        _, _, execute = self.invoke(["n1"], output)
+        execute.assert_called_once_with("vagrant", ["vagrant", "ssh", "n1"])
+
     def test_provider_failure_is_actionable(self):
         with self.assertRaisesRegex(SystemExit, "mise run vm:status.*\nprovider failed"):
             self.invoke(["n1"], returncode=1)

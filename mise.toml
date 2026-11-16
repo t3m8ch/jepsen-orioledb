@@ -154,7 +154,7 @@ python3 scripts/lab.py bash -eu -c '
 [tasks.check]
 description = "Check task code and the Clojure adapter"
 run = """
-for script in scripts/*.sh infra/provision.sh build/build.sh; do bash -n "$script"; done
+for script in scripts/*.sh infra/provision.sh infra/lab-psql build/build.sh; do bash -n "$script"; done
 export PYTHONPYCACHEPREFIX="$PWD/.cache/pycache"
 python3 -m py_compile scripts/test.py scripts/lab.py scripts/snapshot.py scripts/ssh.py
 python3 -m unittest discover -s scripts/tests

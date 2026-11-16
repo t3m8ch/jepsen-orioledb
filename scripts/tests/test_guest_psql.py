@@ -6,7 +6,7 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
-HELPER = (ROOT / 'infra/provision.sh').read_text().split("<<'LAB_PSQL'\n")[1].split('\nLAB_PSQL')[0]
+HELPER = (ROOT / "infra/lab-psql").read_text()
 
 
 class GuestPsqlTest(unittest.TestCase):
