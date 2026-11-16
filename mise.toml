@@ -143,10 +143,9 @@ python3 scripts/lab.py python3 scripts/test.py
 """
 
 [tasks."lab:run"]
-description = "Build, create five VMs, and run a smoke test on n1"
+description = "Create five VMs, build, and run a smoke test on n1"
 run = """
 python3 scripts/lab.py bash -eu -c '
-  bash scripts/build.sh
   (cd infra && vagrant up)
   python3 scripts/test.py --time-limit 30 --concurrency 4 --rate 10 --nemesis none
 '
