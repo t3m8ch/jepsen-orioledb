@@ -68,8 +68,8 @@ mise run lab:run
 Host checks are declared in `[doctor.checks.*]` in `mise.toml`.
 `mise run doctor` remains an alias for `mise doctor project`.
 
-`lab:run` sequentially obtains/builds the binary artifact, starts and provisions
-**all five VMs**, and runs a short `append` test on n1 without faults.
+`lab:run` sequentially starts and provisions **all five VMs**, obtains/builds the
+binary artifact, and runs a short `append` test on n1 without faults.
 The default isolation level is `read-committed`, with the expected consistency model of the same name:
 OrioleDB does not yet support `serializable`.
 Results remain in `jepsen/store/`. The VMs are kept after the test, and the database is cleaned up.
