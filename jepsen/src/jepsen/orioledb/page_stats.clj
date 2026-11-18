@@ -2,13 +2,16 @@
   "Optional VM-side occupancy sampling, independent of workload history."
   (:require [cheshire.core :as json]
             [clojure.java.io :as io]
+            [clojure.java.shell :as shell]
             [clojure.string :as str]
             [clojure.tools.logging :refer [warn]]
+            [gnuplot.core :as g]
             [jepsen.checker :as checker]
             [jepsen.checker.perf :as perf]
             [jepsen.control :as c]
             [jepsen.control.util :as cu]
             [jepsen.nemesis :as nemesis]
+            [jepsen.orioledb.evictions :as evictions]
             [jepsen.store :as store]
             [jepsen.util :as util]))
 
@@ -86,73 +89,90 @@
             (line-seq reader)))
     []))
 
-(def write-pattern
-  #"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d+ UTC) \[(\d+)\] DEBUG:  Wrote (plain disk page|disk page): checkpoint (\d+)(?: size (\d+))?$")
+(defn output-commands [test filename size]
+  [[:set :terminal :pngcairo :noenhanced :size size]
+   [:set :output (str (store/path! test filename))]])
 
-(defn parse-write [line node anchor]
-  (when-let [[_ timestamp pid variant checkpoint size] (re-matches write-pattern line)]
-    (when (= (= variant "disk page") (boolean size))
-      (try
-        (let [instant (java.time.Instant/parse
-                       (str (str/replace (subs timestamp 0 (- (count timestamp) 4)) " " "T") "Z"))
-              origin (java.time.Instant/parse (:timestamp anchor))
-              elapsed (+ (:elapsed anchor)
-                         (/ (.toNanos (java.time.Duration/between origin instant)) 1e9))]
-          {:timestamp (str instant) :elapsed elapsed :node node
-           :pid (parse-long pid) :checkpoint (parse-long checkpoint)
-           :size (when size (parse-long size))})
-        (catch Exception _ nil)))))
+(defn plot-panel [series]
+  ;; A multiplot interleaves commands and inline datasets, unlike perf/plot!.
+  (let [command [:plot (apply g/list (map perf/legend-part series))]]
+    (concat [(g/format command)]
+            (mapcat (fn [{:keys [data]}]
+                      (concat (map #(str/join " " %) (if (seq data) data [["NaN" 0]])) ["e"]))
+                    series))))
 
-(defn write-events [test]
-  (vec
-   (mapcat
-    (fn [node]
-      (let [samples (read-samples (store/path test (name node) "page-stats.jsonl"))
-            log (io/file (store/path test (name node) "postgresql.log"))]
-        (when (and (seq samples) (.exists log))
-          (with-open [r (io/reader log)]
-            (into [] (keep #(parse-write % (name node) (first samples))) (line-seq r))))))
-    (:nodes test))))
+(defn render! [lines]
+  (let [{:keys [exit err] :as result} (shell/sh "gnuplot" :in (str (str/join "\n" lines) "\n"))]
+    (when-not (zero? exit)
+      (throw (ex-info (str "Gnuplot error: " err) result)))))
 
-(defn marker-series [events samples]
-  ;; One marker per second keeps dense writes readable; JSONL retains every event.
-  (let [lo (apply min (map :elapsed samples))
-        hi (apply max (map :elapsed samples))]
-    {:title "Observed page-write attempts (1s groups; pool unknown)"
-     :with 'impulses
-     :data (->> events (filter #(<= lo (:elapsed %) hi))
-                (group-by #(long (Math/floor (:elapsed %))))
-                vals (mapv (fn [group] [(:elapsed (first group)) 1])))}))
+(defn shared-x-commands [[lo hi]]
+  [[:set :lmargin :at :screen 0.11] [:set :rmargin :at :screen 0.95]
+   [:set :xrange (g/range lo hi)]])
+
+(defn plot-pool-with-strips! [test filename title data strips xrange]
+  (let [panels (mapcat (fn [last? {:keys [title] :as strip}]
+                         (concat
+                          (map g/format
+                               (concat (if last?
+                                         [[:set :bmargin :at :screen 0.13] [:set :tmargin :at :screen 0.25]
+                                          [:set :format :x "%g"] [:set :xtics :out]
+                                          [:set :xlabel "Elapsed time (s)"]]
+                                         [[:set :bmargin :at :screen 0.26] [:set :tmargin :at :screen 0.38]])
+                                       [[:set :label 1 title :at :graph (g/list 0.015 0.78) :front]]))
+                          (plot-panel [(-> strip (dissoc :title)
+                                           (assoc :with 'points :pointtype 7 :linecolor "#2a78d6"))])))
+                       [false true] strips)]
+    (render!
+     (concat (map g/format
+                  (concat (output-commands test filename (g/list 1000 650))
+                          (shared-x-commands xrange)
+                          [[:set :multiplot]
+                           [:set :bmargin :at :screen 0.43] [:set :tmargin :at :screen 0.84]
+                           [:set :format :x ""] [:set :key :outside :top :center :horizontal]
+                           [:set :ylabel "Pages"] [:set :title title]]))
+             (plot-panel data)
+             (map g/format [[:unset :title] [:unset :ylabel] [:unset :key] [:unset :ytics]
+                            [:unset :xtics] [:set :yrange (g/range -1 1)]])
+             panels
+             ["unset multiplot" "unset output"]))))
+
+(defn plot-undo! [test buckets xrange]
+  (render! (concat (map g/format
+                        (concat (output-commands test "undo-evictions.png" (g/list 1000 330))
+                                (shared-x-commands xrange)
+                                [[:set :key :outside :top :center :horizontal]
+                                 [:set :title "OrioleDB undo-ring evictions"]
+                                 [:set :xlabel "Elapsed time (s)"]
+                                 [:set :grid :ytics :back]
+                                 [:set :ytics (g/lit "('row' 0, 'page' 1, 'system' 2)")]
+                                 [:set :yrange (g/range -0.55 2.55)]]))
+                   (plot-panel (evictions/undo-series buckets)))))
 
 (defn plot! [test]
-  (let [samples (mapcat #(read-samples (store/path test (name %) "page-stats.jsonl"))
-                        (:nodes test))
-        events (when (:trace-page-writes test) (write-events test))]
-    (when (:trace-page-writes test)
-      (with-open [w (io/writer (store/path! test "page-writes.jsonl"))]
-        (doseq [event events] (.write w (str (json/generate-string event) "\n")))))
-    (when (seq samples)
-      (doseq [[pool filename] pools
-              :let [data (series samples pool)]
+  (let [samples-by-node (mapv (fn [node]
+                                [(name node) (read-samples (store/path test (name node) "page-stats.jsonl"))])
+                              (:nodes test))
+        samples (mapcat second samples-by-node)
+        trace? (and (= :orioledb (:engine test :orioledb)) (:trace-evictions test))
+        buckets (when trace? (evictions/export! test samples-by-node))
+        xrange (when-let [[lo hi] (evictions/sample-range samples)]
+                 (if (= lo hi) [(- lo 0.5) (+ hi 0.5)] [lo hi]))]
+    (when xrange
+      (doseq [[pool suffix] pools
+              :let [data (series samples pool)
+                    title (str "OrioleDB " pool " occupancy")
+                    filename (str "page-stats-" suffix ".png")]
               :when (some #(Double/isFinite (double (second %))) (mapcat :data data))]
-        (perf/plot! {:preamble [[:set :terminal :pngcairo :noenhanced :size (str "1000,500")]
-                               [:set :output (str (store/path! test (str "page-stats-" filename ".png"))) ]
-                               (if (:trace-page-writes test)
-                                 [:set :key :outside :below :center]
-                                 [:set :key :outside :right])
-                               [:set :xlabel "Elapsed time (s)"]
-                               [:set :ylabel "Pages"]
-                               [:set :title (str "OrioleDB " pool " occupancy")]]
-                     :series (cond-> data
-                               (seq events)
-                               (conj (let [top (apply max
-                                                      (filter #(Double/isFinite (double %))
-                                                              (map second (mapcat :data data))))]
-                                       (-> (marker-series events samples)
-                                           (assoc :with 'points :pointtype 2 :linecolor "#999999")
-                                           (update :data
-                                                   #(mapv (fn [[x _]] [x (* 1.08 (max 1 top))]) %))))))})))))
-
+        (if trace?
+          (plot-pool-with-strips! test filename title data (evictions/pool-strips buckets pool) xrange)
+          (perf/plot! {:preamble (into (output-commands test filename (g/list 1000 500))
+                                       [[:set :key :outside :right]
+                                        [:set :xlabel "Elapsed time (s)"]
+                                        [:set :ylabel "Pages"]
+                                        [:set :title title]])
+                       :series data})))
+      (when trace? (plot-undo! test buckets xrange)))))
 
 (defn plot-checker []
   (reify checker/Checker

@@ -91,7 +91,7 @@
          "default_table_access_method = '" access-method "'\n"
          "unix_socket_directories = '/var/lib/jepsen'\n"
          (when (= "orioledb" access-method)
-           (str (when (:trace-page-writes test)
+           (str (when (:trace-evictions test)
                   "log_min_messages = debug1
 log_timezone = 'UTC'
 log_line_prefix = '%m [%p] '

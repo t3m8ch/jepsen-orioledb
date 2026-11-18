@@ -12,6 +12,7 @@
                  "../vendor/jepsen-sql/src"
                  "../vendor/jepsen-postgres/postgres/src"]
   :resource-paths ["resources"
+                   "../build/patches"
                    "../vendor/jepsen-postgres/postgres/resources"]
   :test-paths ["test"]
   :main jepsen.orioledb.cli

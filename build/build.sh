@@ -23,14 +23,14 @@ if [[ $expected != "$LAB_POSTGRES_SHA" ]]; then
   exit 1
 fi
 
-cd /work/postgres
-read -r -a configure_flags <<<"$LAB_PG_CONFIGURE"
-./configure --prefix="$prefix" "${configure_flags[@]}" CFLAGS="$LAB_CFLAGS"
-make -j "$jobs"
-make install
-make -C contrib -j "$jobs" install
-
 cd /work/orioledb
+patch_sha256=
+if [[ $LAB_TRACE_EVICTIONS == 1 ]]; then
+  patch=/work/patches/orioledb-eviction-trace-v2.patch
+  git apply --check "$patch"
+  git apply "$patch"
+  patch_sha256=$(sha256sum "$patch" | cut -d ' ' -f 1)
+fi
 make -j "$jobs" USE_PGXS=1 IS_DEV=1 PG_CONFIG="$prefix/bin/pg_config"
 make USE_PGXS=1 IS_DEV=1 PG_CONFIG="$prefix/bin/pg_config" install
 
@@ -70,12 +70,13 @@ for name in $LAB_RUNTIME_PACKAGES; do
   packages=$(jq --arg name "$name" --arg version "$version" '. + {($name): $version}' <<<"$packages")
 done
 
-jq -n --argjson packages "$packages" --arg configure "$("$prefix/bin/pg_config" --configure)" '
+jq -n --arg patch_sha256 "$patch_sha256" --argjson packages "$packages" --arg configure "$("$prefix/bin/pg_config" --configure)" '
   {postgres_sha: env.LAB_POSTGRES_SHA,
    orioledb_sha: env.LAB_ORIOLEDB_SHA, debian_image: env.LAB_DEBIAN_IMAGE,
    debian_version: env.LAB_DEBIAN_VERSION, apt_snapshot: env.LAB_APT_SNAPSHOT,
    pg_configure: env.LAB_PG_CONFIGURE, cflags: env.LAB_CFLAGS,
    architecture: "amd64", runtime_packages: $packages, pg_config: $configure}
+   + (if $patch_sha256 == "" then {} else {eviction_trace_patch_sha256: $patch_sha256} end)
 ' >"$prefix/build-info.json"
 cp "$prefix/build-info.json" /out/build-info.json
 
