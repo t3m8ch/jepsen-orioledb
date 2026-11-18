@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+trace=0
+if [[ $# == 1 && $1 == --trace-evictions ]]; then
+  trace=1
+elif [[ $# != 0 ]]; then
+  echo 'Usage: scripts/build.sh [--trace-evictions]' >&2
+  exit 2
+fi
+
 cd "$(dirname "$0")/.."
 mkdir -p .cache/artifacts
 output=$(mktemp -d "$PWD/.cache/artifacts/.export-XXXXXXXX")
@@ -18,6 +26,7 @@ podman build --layers --force-rm --pull=missing --tag localhost/jepsen-orioledb:
   --build-arg LAB_DEBIAN_VERSION \
   --build-arg LAB_PG_CONFIGURE \
   --build-arg LAB_CFLAGS \
+  --build-arg "LAB_TRACE_EVICTIONS=$trace" \
   --output "type=local,dest=$output" build 2>&1 | tee .cache/build.log
 
 # Replace the previous export only after a successful build and verification.

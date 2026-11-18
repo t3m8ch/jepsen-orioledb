@@ -241,10 +241,10 @@ commit**, and set the corresponding PostgreSQL 17 SHA in `LAB_POSTGRES_SHA`.
 The build script verifies this pair; OrioleDB also checks the patchset during compilation.
 Dependency and image updates are explicit changes to tracked files.
 
-The builder runs as an unprivileged user. PostgreSQL and contrib are installed
-into `/opt/jepsen/pgsql`, and then OrioleDB is installed there using this build's
-`pg_config`. The smoke test creates a cluster with locale C, loads the extension,
-creates an OrioleDB table, and verifies the data after a restart. The source-build
+The builder runs as an unprivileged user. The PostgreSQL stage compiles and
+installs PostgreSQL and contrib into `/opt/jepsen/pgsql`. The OrioleDB stage
+reuses that installation and builds the extension with its `pg_config`. The smoke test creates a cluster with locale C,
+loads the extension, creates an OrioleDB table, and verifies the data after a restart. The source-build
 container runs without network access (`RUN --network=none`). Sources and packages are downloaded
 by the preceding Containerfile steps. Download retries handle transient Debian Snapshot errors.
 
@@ -253,7 +253,8 @@ The final `FROM scratch` stage contains only `pgsql.tar.gz`, `build-info.json`,
 exports these files to the host. After successful checksum verification, the result
 replaces `.cache/artifacts/current/`. The full build log is stored in `.cache/build.log`.
 `build-info.json` is also included in the installation archive. It contains revisions,
-build parameters, and exact runtime package versions.
+build parameters, and exact runtime package versions. Traced builds also record
+`eviction_trace_patch_sha256`.
 
 This provides reproducibility of inputs and experimental conditions. Bit-for-bit identity
 of compilation results and the Jepsen concurrent schedule is not guaranteed.
@@ -389,21 +390,35 @@ plotting errors are reported under `:page-stats` without changing the workload's
 validity verdict. These are occupancy snapshots, not cumulative write or eviction
 counters; falling occupancy alone does not establish eviction activity.
 
-Add `--trace-page-writes` to enable global DEBUG1 logging before startup and
-annotate these plots with observed page-write attempts. It automatically sets
-`--page-stats-interval 1` unless an explicit interval is supplied. Both options
-are saved in test metadata and ignored with `--engine postgres`; ordinary runs
-retain their logging behavior.
+Use `--trace-evictions` to build OrioleDB with the tracked v2 patch and enable
+DEBUG1 logging from startup. The runner selects the build before launching
+Jepsen. This reuses the PostgreSQL build and patches only the pinned OrioleDB
+source; no fork is needed. For a build without a test run, use
+`mise run build -- --trace-evictions`. Jepsen rejects missing or mismatched patch
+metadata before setting up the VM. Tracing defaults to `--page-stats-interval 1`,
+respects an explicit interval, and is ignored with `--engine postgres`.
 
-Both `Wrote plain disk page` and `Wrote disk page` messages are exported to
-`page-writes.jsonl` at the run root, including UTC timestamp, elapsed seconds,
-node, PID, checkpoint and optional size. The original node `postgresql.log` is
-retained. Events use each node's first sample UTC timestamp and elapsed value as
-their time reference, not log download time. This assumes the VM wall clock
-does not jump during the run; sampling itself still uses monotonic uptime.
-Markers group events per second within the sampled time range; the JSONL retains
-all events, including startup events outside that range. Markers share all pool
-plots because the messages do not identify a pool. These observations are
-post-attempt logging points, not proof of device persistence or successful fsync,
-and do not count clean evictions. Empty streams add no markers. Export/plot
-errors are diagnostic and do not change the correctness verdict.
+Each occupancy plot has two separate strips below its page-count axis. Both
+show outcomes from the shared-pool clock sweep:
+
+- **Evictions** shows `OWalkPageEvicted` for that pool.
+- **Writeback without eviction** shows `OWalkPageWritten` for that pool. It is
+  not a count of all page writes or evidence of durable storage.
+
+`undo-evictions.png` uses the same elapsed-time range and separate tracks for
+row, page, and system undo. Color and shape identify the reason: `bgwriter`,
+`checkpoint_pressure`, `backend_opportunistic`, `backend_reserve`, or
+`inplace_rewrite`. Offsets within each track keep coincident reasons distinct.
+The figure shows undo-ring eviction events, not undo occupancy or file writes.
+
+The raw node `postgresql.log` is unchanged. The run-level `evictions.jsonl`
+contains one record per parsed `orioledb_trace` line, with UTC timestamp, node,
+PID, elapsed seconds, and the event-specific fields. Elapsed time uses each
+node's first occupancy sample as its reference and assumes the VM wall clock
+does not jump. If a node has no time reference, its records retain their UTC
+timestamp and have `elapsed: null`.
+
+Plots show at most one dot per elapsed-second bucket for each pool and B-tree
+event kind, or each undo type and reason. Events outside the node's sampled
+window are excluded only from the figures. The JSONL keeps every parsed event,
+including duplicates and events outside that window.

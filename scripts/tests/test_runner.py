@@ -55,6 +55,28 @@ class TestRunnerTests(unittest.TestCase):
         self.assertEqual(environment["LAB_ARTIFACT"], str(root / ".cache/artifacts/current"))
         self.assertEqual(environment["LAB_DATA_HOST"], "192.168.77.11")
 
+    def test_trace_variant_is_selected_without_consuming_jepsen_options(self):
+        runner = load_runner()
+        flag = "--trace-evictions"
+        for args, trace in [([flag], True),
+                            ([flag + "=true"], True),
+                            ([flag, "--engine", "orioledb"], True),
+                            (["--engine=orioledb", flag], True),
+                            ([flag, "--engine", "postgres"], False),
+                            (["--engine=postgres", flag], False),
+                            (["--", flag], False)]:
+            with self.subTest(args=args), \
+                    patch.object(runner.subprocess, "run", side_effect=[
+                        subprocess.CompletedProcess([], 0),
+                        subprocess.CompletedProcess([], 0, "HostName host\nPort 22\nUser vagrant\nIdentityFile key\n")]) as run, \
+                    patch.object(runner.os, "chdir"), \
+                    patch.object(runner.os, "execvpe") as execute, \
+                    patch("sys.argv", ["test.py", *args]):
+                runner.main()
+                build = ["bash", "scripts/build.sh"] + ([flag] if trace else [])
+                self.assertEqual(run.call_args_list[0].args[0], build)
+                self.assertEqual(execute.call_args.args[1], ["lein", "run", "test", *args])
+
     def test_failed_build_does_not_start_jepsen(self):
         runner = load_runner()
         with patch.object(runner.subprocess, "run", side_effect=
