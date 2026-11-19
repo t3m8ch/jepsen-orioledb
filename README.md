@@ -390,7 +390,7 @@ plotting errors are reported under `:page-stats` without changing the workload's
 validity verdict. These are occupancy snapshots, not cumulative write or eviction
 counters; falling occupancy alone does not establish eviction activity.
 
-Use `--trace-evictions` to build OrioleDB with the tracked v2 patch and enable
+Use `--trace-evictions` to build OrioleDB with the tracked eviction-trace patch and enable
 DEBUG1 logging from startup. The runner selects the build before launching
 Jepsen. This reuses the PostgreSQL build and patches only the pinned OrioleDB
 source; no fork is needed. For a build without a test run, use
