@@ -399,18 +399,38 @@ source; no fork is needed. For a build without a test run, use
 metadata before setting up the VM. Tracing defaults to `--page-stats-interval 1`,
 respects an explicit interval, and is ignored with `--engine postgres`.
 
-Each occupancy plot has two separate strips below its page-count axis. Both
+Each B-tree occupancy plot has two separate strips below its page-count axis. Both
 show outcomes from the shared-pool clock sweep:
 
 - **Evictions** shows `OWalkPageEvicted` for that pool.
 - **Writeback without eviction** shows `OWalkPageWritten` for that pool. It is
   not a count of all page writes or evidence of durable storage.
 
-`undo-evictions.png` uses the same elapsed-time range and separate tracks for
-row, page, and system undo. Color and shape identify the reason: `bgwriter`,
-`checkpoint_pressure`, `backend_opportunistic`, `backend_reserve`, or
-`inplace_rewrite`. Offsets within each track keep coincident reasons distinct.
-The figure shows undo-ring eviction events, not undo occupancy or file writes.
+With tracing enabled, `page-stats.jsonl` also has an `undo` array on each
+successful sample. It records the per-type capacity in bytes and the exact
+`last_used_location` and `written_location` as decimal strings. Both undo and
+B-tree data use the same sample timestamp and interval. If the combined query
+fails, the collector tries the B-tree sampler alone. Plain OrioleDB samples only
+B-tree pools. The patched SQL function is installed when Jepsen creates the
+extension in its fresh test cluster; installing new binaries alone into a
+pre-existing extension does not add it.
+
+`undo-evictions.png` shows one panel each for row, page, and system undo. Ring
+occupancy is `100 × (last_used_location − written_location) / capacity_bytes`,
+with integer subtraction before conversion to a percentage. The scale is
+0–100%. Missing measurements leave gaps; triangles at the relevant boundary
+flag measurements outside the scale, and the panel title reports their range.
+The raw positions are still in `page-stats.jsonl`. A negative difference can
+result from reading the two positions independently. The percentage describes
+the undo ring, not file-buffer occupancy or disk I/O.
+
+Below each panel, the existing undo-ring eviction trace markers share the
+elapsed-time axis. The trace does not cover every advance of `written_location`,
+so occupancy can fall without a marker. Color
+and shape identify the reason: `bgwriter`, `checkpoint_pressure`,
+`backend_opportunistic`, `backend_reserve`, or `inplace_rewrite`. Fixed vertical
+offsets separate coincident reasons. Runs without undo measurements still
+render the eviction-only tracks.
 
 The raw node `postgresql.log` is unchanged. The run-level `evictions.jsonl`
 contains one record per parsed `orioledb_trace` line, with UTC timestamp, node,

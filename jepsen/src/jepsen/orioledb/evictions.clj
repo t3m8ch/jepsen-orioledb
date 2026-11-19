@@ -92,12 +92,16 @@
         [["btree_evict" "Evictions"]
          ["btree_writeback" "Writeback without eviction"]]))
 
-(defn undo-series [buckets]
+(defn- undo-tracks [buckets types]
   (mapv (fn [reason-index [reason color shape]]
           {:title reason :with 'points :linecolor color :pointtype shape
            :data (into []
                        (mapcat (fn [type-index type]
                                  (let [y (+ type-index (* 0.15 (- reason-index 2)))]
                                    (map #(vector % y) (marker-times buckets [type reason]))))
-                               (range) undo-types))})
+                               (range) types))})
         (range) undo-styles))
+
+(defn undo-series
+  ([buckets] (undo-tracks buckets undo-types))
+  ([buckets type] (undo-tracks buckets [type])))
