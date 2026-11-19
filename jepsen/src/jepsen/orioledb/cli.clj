@@ -29,11 +29,12 @@
             (str/split-lines (slurp (io/file artifact "SHA256SUMS"))))
       (throw (ex-info "Artifact archive is missing from SHA256SUMS" {}))))
 
-(defn eviction-patch-sha256 []
-  (with-open [patch (io/input-stream (io/resource "orioledb-eviction-trace.patch"))]
-    (->> (.readAllBytes patch)
-         (.digest (MessageDigest/getInstance "SHA-256"))
-         (.formatHex (HexFormat/of)))))
+(defn trace-patches-sha256 []
+  (let [digest (MessageDigest/getInstance "SHA-256")]
+    (doseq [filename ["orioledb-eviction-trace.patch" "orioledb-undo-buffer-stats.patch"]]
+      (with-open [patch (io/input-stream (io/resource filename))]
+        (.update digest (.readAllBytes patch))))
+    (.formatHex (HexFormat/of) (.digest digest))))
 
 (defn read-archive-build-info [artifact]
   (let [{:keys [exit out err]}
@@ -47,14 +48,14 @@
 (defn verify-run-artifact! [{:keys [trace-evictions engine]}]
   (when (and trace-evictions (not= :postgres engine))
     (let [artifact (required-env "LAB_ARTIFACT")
-          expected (eviction-patch-sha256)
+          expected (trace-patches-sha256)
           facts (io/file artifact "build-info.json")
           actual (when (.isFile facts)
                    (:eviction_trace_patch_sha256 (json/parse-string (slurp facts) true)))
           embedded (when (= expected actual)
                      (:eviction_trace_patch_sha256 (read-archive-build-info artifact)))]
       (when-not (= expected actual embedded)
-        (throw (ex-info "OrioleDB eviction tracing requires an artifact with the current trace patch; rebuild with --trace-evictions"
+        (throw (ex-info "OrioleDB eviction tracing requires an artifact with the current trace patches; rebuild with --trace-evictions"
                         {:expected expected :actual actual :embedded embedded :artifact artifact}))))))
 
 (defn open [test _node]

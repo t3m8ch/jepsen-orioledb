@@ -57,23 +57,7 @@ diff --git a/include/transam/undo.h b/include/transam/undo.h
 diff --git a/src/transam/undo.c b/src/transam/undo.c
 --- a/src/transam/undo.c
 +++ b/src/transam/undo.c
-@@ -51,6 +51,7 @@
- #include "storage/lmgr.h"
- #include "storage/md.h"
- #include "storage/proc.h"
-+#include "utils/builtins.h"
- #include "utils/memutils.h"
- #include "btree/iterator.h"
- #include "replication/slot.h"
-@@ -64,6 +65,7 @@
- 
- PG_FUNCTION_INFO_V1(orioledb_undo_size);
- PG_FUNCTION_INFO_V1(orioledb_get_undo_meta);
-+PG_FUNCTION_INFO_V1(orioledb_undo_buffer_stats);
- PG_FUNCTION_INFO_V1(orioledb_get_proc_retain_undo_locations);
- PG_FUNCTION_INFO_V1(orioledb_slot_retain_undo_location);
- PG_FUNCTION_INFO_V1(orioledb_insert_sys_xid_undo_location);
-@@ -1907,7 +1909,7 @@
+@@ -1907,7 +1907,7 @@
  			UndoLocation reservedNow = pg_atomic_read_u64(&meta->minProcReservedLocation);
  
  			evict_undo_to_disk(undoType, Min(pageLoc, reservedNow),
@@ -82,7 +66,7 @@ diff --git a/src/transam/undo.c b/src/transam/undo.c
  		}
  	}
  }
-@@ -1919,7 +1921,7 @@
+@@ -1919,7 +1919,7 @@
  evict_undo_to_disk(UndoLogType undoType,
  				   UndoLocation targetUndoLocation,
  				   UndoLocation minProcReservedLocation,
@@ -91,7 +75,7 @@ diff --git a/src/transam/undo.c b/src/transam/undo.c
  {
  	UndoLocation retainUndoLocation,
  				writtenLocation,
-@@ -2053,6 +2055,12 @@
+@@ -2053,6 +2053,12 @@
  	SpinLockRelease(&meta->minUndoLocationsMutex);
  
  	LWLockRelease(&meta->undoWriteLock);
@@ -104,7 +88,7 @@ diff --git a/src/transam/undo.c b/src/transam/undo.c
  }
  
  /*
-@@ -2091,7 +2099,7 @@
+@@ -2091,7 +2097,7 @@
  
  	if (targetLocation < minProcReservedLocation)
  		evict_undo_to_disk(undoType, targetLocation, minProcReservedLocation,
@@ -113,7 +97,7 @@ diff --git a/src/transam/undo.c b/src/transam/undo.c
  }
  
  bool
-@@ -2180,7 +2188,7 @@
+@@ -2180,7 +2186,7 @@
  	 * exclusive acquisition behind it.
  	 */
  	evict_undo_to_disk(undoType, location + size - circularBufferSize,
@@ -122,7 +106,7 @@ diff --git a/src/transam/undo.c b/src/transam/undo.c
  	if (location + size <=
  		pg_atomic_read_u64(&meta->writtenLocation) + circularBufferSize)
  		return true;
-@@ -2191,7 +2199,7 @@
+@@ -2191,7 +2197,7 @@
  		return true;
  
  	evict_undo_to_disk(undoType, location + size - circularBufferSize,
@@ -131,7 +115,7 @@ diff --git a/src/transam/undo.c b/src/transam/undo.c
  	Assert(location + size <= pg_atomic_read_u64(&meta->writtenLocation) + circularBufferSize);
  
  	return true;
-@@ -3592,7 +3600,7 @@
+@@ -3592,7 +3598,7 @@
  		 */
  		evict_undo_to_disk(undoType, memoryUndoLocation,
  						   pg_atomic_read_u64(&meta->minProcReservedLocation),
@@ -140,57 +124,6 @@ diff --git a/src/transam/undo.c b/src/transam/undo.c
  	}
  
  	/* Finally perform writing to the file */
-@@ -4034,6 +4042,50 @@
- 	return (Datum) 0;
- }
- 
-+/* Preserve the full unsigned range of an undo location in SQL. */
-+static Datum
-+undo_location_to_numeric_datum(UndoLocation location)
-+{
-+	char		buf[21];
-+
-+	snprintf(buf, sizeof(buf), UINT64_FORMAT, (uint64) location);
-+	return DirectFunctionCall3(numeric_in,
-+							   CStringGetDatum(buf),
-+							   ObjectIdGetDatum(InvalidOid),
-+							   Int32GetDatum(-1));
-+}
-+
-+Datum
-+orioledb_undo_buffer_stats(PG_FUNCTION_ARGS)
-+{
-+	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
-+
-+	orioledb_check_shmem();
-+	InitMaterializedSRF(fcinfo, 0);
-+
-+	for (int i = 0; i < (int) UndoLogsCount; i++)
-+	{
-+		UndoLogType undoType = (UndoLogType) i;
-+		UndoMeta   *meta = get_undo_meta_by_type(undoType);
-+		UndoLocation lastUsed,
-+					written;
-+		Datum		values[4];
-+		bool		nulls[4] = {false};
-+
-+		/* These reads do not form a consistent snapshot. */
-+		lastUsed = pg_atomic_read_u64(&meta->lastUsedLocation);
-+		written = pg_atomic_read_u64(&meta->writtenLocation);
-+
-+		values[0] = CStringGetTextDatum(get_undo_type_name(undoType));
-+		values[1] = Int64GetDatum((int64) o_undo_circular_sizes[i]);
-+		values[2] = undo_location_to_numeric_datum(lastUsed);
-+		values[3] = undo_location_to_numeric_datum(written);
-+		tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, values, nulls);
-+	}
-+
-+	return (Datum) 0;
-+}
-+
- Datum
- orioledb_get_proc_retain_undo_locations(PG_FUNCTION_ARGS)
- {
 diff --git a/src/workers/bgwriter.c b/src/workers/bgwriter.c
 --- a/src/workers/bgwriter.c
 +++ b/src/workers/bgwriter.c
@@ -203,19 +136,3 @@ diff --git a/src/workers/bgwriter.c b/src/workers/bgwriter.c
  				}
  				else
  				{
-diff --git a/sql/orioledb--1.6--1.7_dev.sql b/sql/orioledb--1.6--1.7_dev.sql
---- a/sql/orioledb--1.6--1.7_dev.sql
-+++ b/sql/orioledb--1.6--1.7_dev.sql
-@@ -57,3 +57,12 @@
- RETURNS SETOF record
- AS 'MODULE_PATHNAME'
- VOLATILE LANGUAGE C;
-+
-+CREATE FUNCTION orioledb_undo_buffer_stats()
-+RETURNS TABLE (
-+    undo_type text,
-+    capacity_bytes bigint,
-+    last_used_location numeric,
-+    written_location numeric)
-+AS 'MODULE_PATHNAME'
-+VOLATILE LANGUAGE C;
