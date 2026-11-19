@@ -7,3 +7,4 @@
 .clj-kondo
 .lsp
 __pycache__/
+.nrepl-port
