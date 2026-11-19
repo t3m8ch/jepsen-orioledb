@@ -22,6 +22,9 @@
 (defn enabled? [test]
   (and (= :orioledb (:engine test :orioledb)) (:page-stats-interval test)))
 
+(defn- trace-enabled? [test]
+  (and (= :orioledb (:engine test :orioledb)) (:trace-evictions test)))
+
 (defn stop! []
   ;; Stop the entire session, including a blocked psql or a long interval sleep.
   ;; Wait before exporting; KILL is a bounded fallback. The pidfile is root-owned.
@@ -43,12 +46,13 @@
     (c/su
      (c/exec :touch log-file)
      (c/exec :chmod "0644" log-file)
-     (cu/start-daemon! {:pidfile pid-file :logfile "/var/log/jepsen/page-stats-collector.log"
+     (apply cu/start-daemon! {:pidfile pid-file :logfile "/var/log/jepsen/page-stats-collector.log"
                         :chdir "/" :match-executable? false}
                        "/usr/bin/setsid" "/bin/bash" script-file
                        (:page-stats-interval test)
                        (double (util/nanos->secs (util/relative-time-nanos)))
-                       "/opt/jepsen/pgsql/bin/psql" (:postgres-port test 5432) log-file))))
+                       "/opt/jepsen/pgsql/bin/psql" (:postgres-port test 5432) log-file
+                       (when (trace-enabled? test) ["undo"])))))
 
 (defn wrap-nemesis [delegate]
   (reify nemesis/Nemesis
@@ -78,6 +82,23 @@
                                 (some #(when (= pool (:pool_name %)) (get % metric))
                                       (:pools sample)))
                               Double/NaN)]) samples)}) metrics))
+
+(defn- position [x]
+  (cond
+    (integer? x) (bigint x)
+    (and (string? x) (re-matches #"[0-9]+" x)) (bigint x)))
+
+(defn undo-percentages [samples undo-type]
+  (mapv (fn [{:keys [available elapsed undo]}]
+          [elapsed
+           (when available
+             (when-let [{:keys [capacity_bytes last_used_location written_location]}
+                        (some #(when (= undo-type (:undo_type %)) %) undo)]
+               (let [last-used (position last_used_location)
+                     written (position written_location)]
+                 (when (and last-used written (integer? capacity_bytes) (pos? capacity_bytes))
+                   (double (/ (* 100 (- last-used written)) capacity_bytes))))))])
+        samples))
 
 (defn read-samples [file]
   (if (.exists (io/file file))
@@ -137,7 +158,7 @@
              panels
              ["unset multiplot" "unset output"]))))
 
-(defn plot-undo! [test buckets xrange]
+(defn- plot-legacy-undo! [test buckets xrange]
   (render! (concat (map g/format
                         (concat (output-commands test "undo-evictions.png" (g/list 1000 330))
                                 (shared-x-commands xrange)
@@ -149,12 +170,63 @@
                                  [:set :yrange (g/range -0.55 2.55)]]))
                    (plot-panel (evictions/undo-series buckets)))))
 
+(defn- undo-occupancy-panel [undo-type percentages]
+  (let [outside (keep (fn [[_ pct]] (when (and pct (not (<= 0 pct 100))) pct)) percentages)
+        title (str undo-type " undo"
+                   (cond
+                     (not-any? second percentages) " (no samples)"
+                     (seq outside) (format " — %d out of range (%.3g%% to %.3g%%; triangles)"
+                                           (count outside) (reduce min outside) (reduce max outside))))]
+    {:title title
+     :series [{:with 'linespoints :pointtype 7 :linecolor "#315a78" :linewidth 1.5
+               :data (mapv (fn [[t pct]] [t (if (and pct (<= 0 pct 100)) pct Double/NaN)]) percentages)}
+              ;; Boundary triangles mark outliers, not occupancy at 0% or 100%.
+              {:with 'points :pointtype 11 :linecolor "#9a3721"
+               :data (into [] (keep (fn [[t pct]] (when (and pct (neg? pct)) [t 0]))) percentages)}
+              {:with 'points :pointtype 9 :linecolor "#9a3721"
+               :data (into [] (keep (fn [[t pct]] (when (and pct (> pct 100)) [t 100]))) percentages)}]}))
+
+(defn- plot-undo-occupancy! [test panels buckets xrange]
+  (render!
+   (concat
+    (map g/format
+         (concat (output-commands test "undo-evictions.png" (g/list 1000 930))
+                 (shared-x-commands xrange)
+                 [[:set :multiplot :title "OrioleDB undo ring occupancy and evictions"]]))
+    (mapcat
+     (fn [i undo-type {:keys [title series]}]
+       (let [top (- 0.86 (* i 0.26))
+             last? (= i (dec (count panels)))]
+         (concat
+          (map g/format [[:unset :key] [:unset :xlabel] [:unset :xtics]
+                         [:set :bmargin :at :screen (- top 0.15)] [:set :tmargin :at :screen top]
+                         [:set :title title] [:set :ylabel "Ring used (%)"]
+                         [:set :yrange (g/range 0 100)] [:set :ytics 25] [:set :grid :ytics :back]])
+          (plot-panel series)
+          (map g/format (concat [[:unset :title] [:unset :grid] [:unset :ytics]
+                                 [:set :ylabel "Evictions"] [:set :yrange (g/range -0.5 0.5)]
+                                 [:set :bmargin :at :screen (- top 0.205)]
+                                 [:set :tmargin :at :screen (- top 0.155)]]
+                                (when (zero? i)
+                                  [[:set :key (g/lit "at screen 0.53,0.93 center horizontal")]])
+                                (when last?
+                                  [[:set :xtics :out] [:set :xlabel "Elapsed time (s)"]])))
+          (plot-panel (evictions/undo-series buckets undo-type)))))
+     (range) evictions/undo-types panels)
+    ["unset multiplot" "unset output"])))
+
+(defn plot-undo! [test samples buckets xrange]
+  (let [percentages (mapv #(undo-percentages samples %) evictions/undo-types)]
+    (if (some (fn [data] (some second data)) percentages)
+      (plot-undo-occupancy! test (mapv undo-occupancy-panel evictions/undo-types percentages) buckets xrange)
+      (plot-legacy-undo! test buckets xrange))))
+
 (defn plot! [test]
   (let [samples-by-node (mapv (fn [node]
                                 [(name node) (read-samples (store/path test (name node) "page-stats.jsonl"))])
                               (:nodes test))
         samples (mapcat second samples-by-node)
-        trace? (and (= :orioledb (:engine test :orioledb)) (:trace-evictions test))
+        trace? (trace-enabled? test)
         buckets (when trace? (evictions/export! test samples-by-node))
         xrange (when-let [[lo hi] (evictions/sample-range samples)]
                  (if (= lo hi) [(- lo 0.5) (+ hi 0.5)] [lo hi]))]
@@ -172,7 +244,7 @@
                                         [:set :ylabel "Pages"]
                                         [:set :title title]])
                        :series data})))
-      (when trace? (plot-undo! test buckets xrange)))))
+      (when trace? (plot-undo! test samples buckets xrange)))))
 
 (defn plot-checker []
   (reify checker/Checker
