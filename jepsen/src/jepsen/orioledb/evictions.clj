@@ -57,24 +57,31 @@
       (update-in buckets [series second] #(if % (min % elapsed) elapsed)))
     buckets))
 
+(defn- export-node! [test writer buckets [node samples]]
+  (let [log (store/path test node "postgresql.log")
+        anchor (first samples)
+        bounds (sample-range samples)]
+    (if (.isFile log)
+      (with-open [reader (io/reader log)]
+        (reduce (fn [buckets line]
+                  (if-let [event (parse-event line node anchor)]
+                    (do
+                      (.write ^java.io.Writer writer
+                              (str (json/generate-string event) "\n"))
+                      (record-marker buckets bounds event))
+                    buckets))
+                buckets
+                (line-seq reader)))
+      buckets)))
+
 (defn export! [test samples-by-node]
   ;; Stream every record to disk. Only the earliest marker per series and second
   ;; needs to stay in memory, even when the raw logs contain millions of events.
-  (with-open [w (io/writer (store/path! test "evictions.jsonl"))]
-    (reduce (fn [buckets [node samples]]
-              (let [log (io/file (store/path test node "postgresql.log"))
-                    anchor (first samples)
-                    bounds (sample-range samples)]
-                (if (.isFile log)
-                  (with-open [r (io/reader log)]
-                    (reduce (fn [buckets line]
-                              (if-let [event (parse-event line node anchor)]
-                                (do (.write w (str (json/generate-string event) "\n"))
-                                    (record-marker buckets bounds event))
-                                buckets))
-                            buckets (line-seq r)))
-                  buckets)))
-            {} samples-by-node)))
+  (with-open [writer (io/writer (store/path! test "evictions.jsonl"))]
+    (reduce (fn [buckets node-samples]
+              (export-node! test writer buckets node-samples))
+            {}
+            samples-by-node)))
 
 (defn marker-times [buckets series]
   (sort (vals (get buckets series))))
