@@ -1,5 +1,5 @@
 (ns jepsen.orioledb.evictions
-  "Parse the opt-in OrioleDB trace and prepare time-aligned event markers."
+  "Parse the opt-in OrioleDB trace and prepare time-aligned event counts."
   (:require [cheshire.core :as json]
             [clojure.java.io :as io]
             [clojure.string :as str]
@@ -9,12 +9,12 @@
 
 (def undo-types ["row" "page" "system"])
 (def undo-styles
-  ;; Fixed order gives each reason a stable track offset, color and shape.
-  [["bgwriter" "#2a78d6" 7]
-   ["checkpoint_pressure" "#eb6834" 5]
-   ["backend_opportunistic" "#1baf7a" 9]
-   ["backend_reserve" "#96295c" 13]
-   ["inplace_rewrite" "#ad50b6" 3]])
+  ;; Fixed order gives each reason a stable stacking order and color.
+  [["bgwriter" "#2a78d6"]
+   ["checkpoint_pressure" "#eb6834"]
+   ["backend_opportunistic" "#1baf7a"]
+   ["backend_reserve" "#96295c"]
+   ["inplace_rewrite" "#ad50b6"]])
 
 (def trace-prefix
   #"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d+ UTC) \[(\d+)\] DEBUG:  orioledb_trace (.*)$")
@@ -50,11 +50,11 @@
   (when-let [times (seq (keep :elapsed samples))]
     [(reduce min times) (reduce max times)]))
 
-(defn record-marker [buckets bounds {:keys [event pool undo_type reason elapsed]}]
+(defn record-event [buckets bounds {:keys [event pool undo_type reason elapsed]}]
   (if (and elapsed bounds (<= (first bounds) elapsed (second bounds)))
     (let [series (if pool [event pool] [undo_type reason])
           second (long (Math/floor elapsed))]
-      (update-in buckets [series second] #(if % (min % elapsed) elapsed)))
+      (update-in buckets [:counts series second] (fnil inc 0)))
     buckets))
 
 (defn- export-node! [test writer buckets [node samples]]
@@ -68,40 +68,37 @@
                     (do
                       (.write ^java.io.Writer writer
                               (str (json/generate-string event) "\n"))
-                      (record-marker buckets bounds event))
+                      (record-event buckets bounds event))
                     buckets))
-                buckets
+                (update buckets :coverage conj (when (and (number? (:elapsed anchor))
+                                                        (try (Instant/parse (or (:timestamp anchor) ""))
+                                                             (catch DateTimeParseException _ nil))) bounds))
                 (line-seq reader)))
-      buckets)))
+      (update buckets :coverage conj nil))))
 
 (defn export! [test samples-by-node]
-  ;; Stream every record to disk. Only the earliest marker per series and second
+  ;; Stream every record to disk. Only the count per series and second
   ;; needs to stay in memory, even when the raw logs contain millions of events.
   (with-open [writer (io/writer (store/path! test "evictions.jsonl"))]
     (reduce (fn [buckets node-samples]
               (export-node! test writer buckets node-samples))
-            {}
+            {:counts {} :coverage []}
             samples-by-node)))
 
-(defn marker-times [buckets series]
-  (sort (vals (get buckets series))))
+(defn complete-seconds
+  "Whole seconds covered by every node's event log and sample window."
+  [{:keys [coverage]}]
+  (when (and (seq coverage) (every? some? coverage))
+    (range (long (Math/ceil (reduce max (map first coverage))))
+           (long (Math/floor (reduce min (map second coverage)))))))
 
-(defn pool-strips [buckets pool]
+(defn pool-counts [{:keys [counts]} pool]
   (mapv (fn [[event label]]
-          {:title label :data (mapv #(vector % 0) (marker-times buckets [event pool]))})
+          {:title label :counts (get counts [event pool])})
         [["btree_evict" "Evictions"]
          ["btree_writeback" "Writeback without eviction"]]))
 
-(defn- undo-tracks [buckets types]
-  (mapv (fn [reason-index [reason color shape]]
-          {:title reason :with 'points :linecolor color :pointtype shape
-           :data (into []
-                       (mapcat (fn [type-index type]
-                                 (let [y (+ type-index (* 0.15 (- reason-index 2)))]
-                                   (map #(vector % y) (marker-times buckets [type reason]))))
-                               (range) types))})
-        (range) undo-styles))
-
-(defn undo-series
-  ([buckets] (undo-tracks buckets undo-types))
-  ([buckets type] (undo-tracks buckets [type])))
+(defn undo-counts [{:keys [counts]} type]
+  (mapv (fn [[reason color]]
+          {:title reason :linecolor color :counts (get counts [type reason])})
+        undo-styles))
