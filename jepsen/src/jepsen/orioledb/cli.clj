@@ -31,12 +31,15 @@
 
 (defn eviction-patch-sha256 []
   (with-open [patch (io/input-stream (io/resource "orioledb-eviction-trace.patch"))]
-    (.formatHex (HexFormat/of) (.digest (MessageDigest/getInstance "SHA-256")
-                                       (.readAllBytes patch)))))
+    (->> (.readAllBytes patch)
+         (.digest (MessageDigest/getInstance "SHA-256"))
+         (.formatHex (HexFormat/of)))))
 
 (defn read-archive-build-info [artifact]
-  (let [{:keys [exit out err]} (shell/sh "bsdtar" "-xOf"
-                                        (str (io/file artifact "pgsql.tar.gz")) "./build-info.json")]
+  (let [{:keys [exit out err]}
+        (shell/sh "bsdtar"
+                  "-xOf"
+                  (str (io/file artifact "pgsql.tar.gz")) "./build-info.json")]
     (when-not (zero? exit)
       (throw (ex-info "Cannot read build-info.json inside artifact" {:artifact artifact :error err})))
     (json/parse-string out true)))
@@ -146,8 +149,8 @@
 
 (defn commands []
   (let [commands (cli/single-test-cmd {:test-fn orioledb-test
-                                      :opt-spec cli-opts
-                                      :opt-fn sql/opt-fn})]
+                                       :opt-spec cli-opts
+                                       :opt-fn sql/opt-fn})]
     ;; Offline analyze reconstructs the test without installing an artifact.
     (update-in commands ["test" :run]
                (fn [run]
