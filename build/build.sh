@@ -26,7 +26,7 @@ fi
 cd /work/orioledb
 patch_sha256=
 if [[ $LAB_TRACE_EVICTIONS == 1 ]]; then
-  patch=/work/patches/orioledb-eviction-trace-v2.patch
+  patch=/work/patches/orioledb-eviction-trace.patch
   git apply --check "$patch"
   git apply "$patch"
   patch_sha256=$(sha256sum "$patch" | cut -d ' ' -f 1)

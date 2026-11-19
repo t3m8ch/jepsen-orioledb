@@ -30,7 +30,7 @@
       (throw (ex-info "Artifact archive is missing from SHA256SUMS" {}))))
 
 (defn eviction-patch-sha256 []
-  (with-open [patch (io/input-stream (io/resource "orioledb-eviction-trace-v2.patch"))]
+  (with-open [patch (io/input-stream (io/resource "orioledb-eviction-trace.patch"))]
     (.formatHex (HexFormat/of) (.digest (MessageDigest/getInstance "SHA-256")
                                        (.readAllBytes patch)))))
 
