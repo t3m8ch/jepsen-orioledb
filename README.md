@@ -216,7 +216,8 @@ To view the results, run `lein run serve` from `jepsen/`.
   process-management tools, users, and sudo. It also installs GCC,
   `wget`, and `ntpdate`, which are required by the standard upstream nemesis setup. It does not install PostgreSQL.
 - `build/Containerfile`: the Debian build stage and a final stage containing only artifacts.
-- `build/build.sh`: build, smoke test, and packaging inside the container.
+- `build/build-postgres.sh`: compile and install PostgreSQL and contrib inside the container.
+- `build/build-orioledb.sh`: build OrioleDB, run the smoke test, and package the installation inside the container.
 - `scripts/build.sh` and `scripts/plugins.sh`: build invocation and plugin installation.
 - `scripts/test.py`: runs Jepsen and parses the Vagrant SSH configuration using
   the Python standard library. Mise tasks invoke it through `scripts/lab.py`, which owns shared state and locking.
@@ -263,7 +264,7 @@ of compilation results and the Jepsen concurrent schedule is not guaranteed.
 
 Podman manages the cache. Compilation runs in `RUN`, so a repeated
 `mise run build` uses the existing layers. Changing source SHAs, build args,
-the Containerfile, or build.sh causes the affected steps to run again.
+the Containerfile, or a container build script causes the affected steps to run again.
 There is no custom cache key. The current result is tagged
 `localhost/jepsen-orioledb:build`.
 
