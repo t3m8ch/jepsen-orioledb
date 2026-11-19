@@ -425,13 +425,10 @@ The raw positions are still in `page-stats.jsonl`. A negative difference can
 result from reading the two positions independently. The percentage describes
 the undo ring, not file-buffer occupancy or disk I/O.
 
-Below each panel, the existing undo-ring eviction trace markers share the
-elapsed-time axis. The trace does not cover every advance of `written_location`,
-so occupancy can fall without a marker. Color
-and shape identify the reason: `bgwriter`, `checkpoint_pressure`,
-`backend_opportunistic`, `backend_reserve`, or `inplace_rewrite`. Fixed vertical
-offsets separate coincident reasons. Runs without undo measurements still
-render the eviction-only tracks.
+Below each panel, stacked bars count undo-ring evictions by reason in each
+elapsed second. The trace does not cover every advance of `written_location`,
+so occupancy can fall without an eviction bar. Runs without undo occupancy
+samples still render one count panel per undo type.
 
 The raw node `postgresql.log` is unchanged. The run-level `evictions.jsonl`
 contains one record per parsed `orioledb_trace` line, with UTC timestamp, node,
@@ -440,7 +437,8 @@ node's first occupancy sample as its reference and assumes the VM wall clock
 does not jump. If a node has no time reference, its records retain their UTC
 timestamp and have `elapsed: null`.
 
-Plots show at most one dot per elapsed-second bucket for each pool and B-tree
-event kind, or each undo type and reason. Events outside the node's sampled
-window are excluded only from the figures. The JSONL keeps every parsed event,
-including duplicates and events outside that window.
+Plots count events in elapsed-time buckets `[second, second + 1)`. Each B-tree
+pool has separate eviction and writeback counts; each undo bar sums its reason
+segments. The figures show bars and a zero baseline only for whole seconds covered by
+every node's log and sample window. Incomplete seconds are left blank. The JSONL keeps every parsed event, including duplicates and
+events outside that window.

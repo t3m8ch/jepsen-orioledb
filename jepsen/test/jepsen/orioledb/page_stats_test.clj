@@ -81,14 +81,14 @@
               undo (fn [type capacity last-used written]
                      {:undo_type type :capacity_bytes capacity
                       :last_used_location last-used :written_location written})]
-          (is (= 330 (.getHeight (chart))))
+          (is (= 630 (.getHeight (chart))))
           (spit file (str (json/generate-string
                            (assoc (first records) :undo [(undo "row" 8 "5" "1")
                                                          (undo "page" 8 "1" "2")
                                                          (undo "system" 8 "10" "1")])) "\n"
                           (slurp file)))
           (is (= {:valid? true} (checker/check (ps/plot-checker) test [] {})))
-          (is (= 930 (.getHeight (chart))))
+          (is (= 1100 (.getHeight (chart))))
           (is (= before (slurp (path test "evictions.jsonl"))))))
       (finally (doseq [file (reverse (file-seq dir))] (io/delete-file file))))))
 
@@ -137,7 +137,7 @@
         undo (parse "01.250" undo-line "n1")
         bounds {"n1" [10 12] "n2" [11 11.5]}
         events [(evict "01.750") (evict "01.250") (evict "02.050") writeback undo]
-        buckets (reduce #(trace/record-marker %1 (bounds (:node %2)) %2) {} events)]
+        buckets (reduce #(trace/record-event %1 (bounds (:node %2)) %2) {} events)]
     (is (= 11.25 (:elapsed undo)))
     (is (= [42 "n1" "row" "inplace_rewrite" 10 30 20]
            ((juxt :pid :node :undo_type :reason :from :to :bytes) undo)))
@@ -145,22 +145,29 @@
     (doseq [payload ["Wrote plain disk page: checkpoint 7" "orioledb_trace event=did_write"
                      "prefix orioledb_trace event=btree_evict pool=main candidate_blkno=17"]]
       (is (nil? (parse "02.000" payload "n1"))))
-    (is (= [[[11.25 0]] []] (mapv :data (trace/pool-strips buckets "main"))))
-    (is (= [[] [[11.29 0]]] (mapv :data (trace/pool-strips buckets "free_tree"))))
-    (is (= [[] []] (mapv :data (trace/pool-strips buckets "catalog"))))))
+    (is (= [{11 2} nil] (mapv :counts (trace/pool-counts buckets "main"))))
+    (is (= [nil {11 1}] (mapv :counts (trace/pool-counts buckets "free_tree"))))
+    (is (= [nil nil] (mapv :counts (trace/pool-counts buckets "catalog"))))))
 
-(deftest undo-tracks-have-stable-offsets-and-group-by-type-and-reason
+(deftest undo-counts-stack-by-type-and-reason
   (let [reasons (map first trace/undo-styles)
-        events (for [type trace/undo-types reason reasons second [3.25 3.75]]
-                 {:undo_type type :reason reason :elapsed second})
-        buckets (reduce #(trace/record-marker %1 [0 5] %2) {} (reverse events))
-        series (trace/undo-series buckets)]
-    (is (= (vec reasons) (mapv :title series)))
-    (is (= 5 (count (set (map :pointtype series)))))
-    (doseq [{:keys [data]} series]
-      (is (= [3.25 3.25 3.25] (mapv first data))))
-    (is (= 15 (count (set (mapcat #(map second (:data %)) series)))))
-    (is (= [[3.25 0.3] [3.25 1.3] [3.25 2.3]] (:data (last series))))))
+        events (for [type trace/undo-types reason reasons elapsed [3.25 3.75]]
+                 {:undo_type type :reason reason :elapsed elapsed})
+        buckets (reduce #(trace/record-event %1 [0 5] %2) {} (reverse events))]
+    (doseq [type trace/undo-types]
+      (let [series (trace/undo-counts buckets type)]
+        (is (= (vec reasons) (mapv :title series)))
+        (is (= (repeat 5 {3 2}) (map :counts series)))
+        (is (= (mapv (fn [lo] [[3.5 (double (inc lo)) 3 4 lo (+ lo 2)]]) (range 0 10 2))
+               (mapv :data (ps/stacked-counts series))))))))
+
+(deftest only-whole-seconds-with-log-coverage-have-a-zero-baseline
+  (is (= [2 3] (trace/complete-seconds {:coverage [[0.1 4.8] [1.1 4.5]]})))
+  (is (empty? (trace/complete-seconds {:coverage [[0 5] nil]})))
+  (is (empty? (trace/complete-seconds {:coverage [[0.1 0.9]]})))
+  (let [series [{:counts {1 7, 2 8, 3 9, 4 10}}]]
+    (is (= [{:counts {2 8, 3 9}}] (ps/covered-counts series (range 2 4))))
+    (is (= [{:counts {}}] (ps/covered-counts series nil)))))
 
 (deftest trace-config-is-global-and-engine-specific
   (is (re-find #"log_min_messages = debug1"

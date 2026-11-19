@@ -131,44 +131,98 @@
   [[:set :lmargin :at :screen 0.11] [:set :rmargin :at :screen 0.95]
    [:set :xrange (g/range lo hi)]])
 
-(defn plot-pool-with-strips! [test filename title data strips xrange]
-  (let [panels (mapcat (fn [last? {:keys [title] :as strip}]
+(defn stacked-counts [series]
+  ;; Each rectangle spans one second and starts above the preceding reasons.
+  (second
+   (reduce (fn [[totals out] {:keys [counts] :as entry}]
+             [(merge-with + totals counts)
+              (conj out (-> entry
+                            (dissoc :counts)
+                            (assoc :with 'boxxyerror
+                                   :data (mapv (fn [[sec n]]
+                                                 (let [lo (get totals sec 0)
+                                                       hi (+ lo n)]
+                                                   [(+ sec 0.5) (/ (+ lo hi) 2.0)
+                                                    sec (inc sec) lo hi]))
+                                               (sort-by key counts)))))])
+           [{} []] series)))
+
+(defn covered-counts [series complete-seconds]
+  (mapv (fn [entry]
+          (update entry :counts #(if (seq complete-seconds)
+                                   (into {} (filter (fn [[sec _]]
+                                                      (<= (first complete-seconds) sec (last complete-seconds)))) %)
+                                   {})))
+        series))
+
+(defn- rate-panel [series complete-seconds]
+  (let [series (covered-counts series complete-seconds)
+        peak (reduce max 1 (vals (apply merge-with + (map :counts series))))]
+    (concat
+     (map g/format [[:set :ylabel "Events/s"]
+                    [:set :yrange (g/range -0.08 (* 1.12 peak))]
+                    [:set :ytics (max 1 (long (Math/ceil (/ peak 3.0))))]
+                    [:set :style :fill :solid 1.0 :border :lc :rgb "#ffffff"]])
+     (when-not (seq complete-seconds)
+       [(g/format [:set :label 2 "No complete seconds with trace coverage" :at :graph (g/list 0.5 0.5) :center])])
+     (plot-panel
+      (cond-> (stacked-counts series)
+        (seq complete-seconds)
+        (conj {:with 'lines :linecolor "#555555"
+               :data [[(first complete-seconds) 0] [(inc (last complete-seconds)) 0]]})))
+     (when-not (seq complete-seconds) [(g/format [:unset :label 2])]))))
+
+(defn- elapsed-axis []
+  [[:set :format :x "%g"] [:set :xtics :out] [:set :xlabel "Elapsed time (s)"]])
+
+(defn plot-pool-with-rates! [test filename title data rates complete xrange]
+  (let [panels (mapcat (fn [last? {:keys [title] :as rate}]
                          (concat
                           (map g/format
                                (concat (if last?
-                                         [[:set :bmargin :at :screen 0.13] [:set :tmargin :at :screen 0.25]
-                                          [:set :format :x "%g"] [:set :xtics :out]
-                                          [:set :xlabel "Elapsed time (s)"]]
-                                         [[:set :bmargin :at :screen 0.26] [:set :tmargin :at :screen 0.38]])
-                                       [[:set :label 1 title :at :graph (g/list 0.015 0.78) :front]]))
-                          (plot-panel [(-> strip (dissoc :title)
-                                           (assoc :with 'points :pointtype 7 :linecolor "#2a78d6"))])))
-                       [false true] strips)]
+                                         (concat [[:set :bmargin :at :screen 0.12] [:set :tmargin :at :screen 0.28]]
+                                                 (elapsed-axis))
+                                         [[:set :bmargin :at :screen 0.34] [:set :tmargin :at :screen 0.50]])
+                                       [[:set :title title]]))
+                          (rate-panel [(assoc (dissoc rate :title) :linecolor "#2a78d6")] complete)))
+                       [false true] rates)]
     (render!
      (concat (map g/format
-                  (concat (output-commands test filename (g/list 1000 650))
+                  (concat (output-commands test filename (g/list 1000 750))
                           (shared-x-commands xrange)
                           [[:set :multiplot]
-                           [:set :bmargin :at :screen 0.43] [:set :tmargin :at :screen 0.84]
+                           [:set :bmargin :at :screen 0.57] [:set :tmargin :at :screen 0.86]
                            [:set :format :x ""] [:set :key :outside :top :center :horizontal]
                            [:set :ylabel "Pages"] [:set :title title]]))
              (plot-panel data)
-             (map g/format [[:unset :title] [:unset :ylabel] [:unset :key] [:unset :ytics]
-                            [:unset :xtics] [:set :yrange (g/range -1 1)]])
+             (map g/format [[:unset :key] [:unset :xtics]])
              panels
              ["unset multiplot" "unset output"]))))
 
+(defn- undo-key []
+  [:set :key (g/lit "at screen 0.53,0.92 center horizontal")])
+
 (defn- plot-legacy-undo! [test buckets xrange]
-  (render! (concat (map g/format
-                        (concat (output-commands test "undo-evictions.png" (g/list 1000 330))
-                                (shared-x-commands xrange)
-                                [[:set :key :outside :top :center :horizontal]
-                                 [:set :title "OrioleDB undo-ring evictions"]
-                                 [:set :xlabel "Elapsed time (s)"]
-                                 [:set :grid :ytics :back]
-                                 [:set :ytics (g/lit "('row' 0, 'page' 1, 'system' 2)")]
-                                 [:set :yrange (g/range -0.55 2.55)]]))
-                   (plot-panel (evictions/undo-series buckets)))))
+  (let [complete (evictions/complete-seconds buckets)]
+    (render!
+     (concat
+      (map g/format
+           (concat (output-commands test "undo-evictions.png" (g/list 1000 630))
+                   (shared-x-commands xrange)
+                   [[:set :multiplot :title "OrioleDB undo-ring evictions by second"]
+                    [:unset :xtics]]))
+      (mapcat (fn [i undo-type]
+                (let [top (- 0.83 (* i 0.25))]
+                  (concat
+                   (map g/format
+                        (concat [[:set :title (str undo-type " undo")]
+                                 [:set :tmargin :at :screen top]
+                                 [:set :bmargin :at :screen (- top 0.17)]
+                                 (if (zero? i) (undo-key) [:unset :key])]
+                                (when (= i 2) (elapsed-axis))))
+                   (rate-panel (evictions/undo-counts buckets undo-type) complete))))
+              (range) evictions/undo-types)
+      ["unset multiplot" "unset output"]))))
 
 (defn- undo-occupancy-panel [undo-type percentages]
   (let [outside (keep (fn [[_ pct]] (when (and pct (not (<= 0 pct 100))) pct)) percentages)
@@ -187,33 +241,31 @@
                :data (into [] (keep (fn [[t pct]] (when (and pct (> pct 100)) [t 100]))) percentages)}]}))
 
 (defn- plot-undo-occupancy! [test panels buckets xrange]
-  (render!
-   (concat
-    (map g/format
-         (concat (output-commands test "undo-evictions.png" (g/list 1000 930))
-                 (shared-x-commands xrange)
-                 [[:set :multiplot :title "OrioleDB undo ring occupancy and evictions"]]))
-    (mapcat
-     (fn [i undo-type {:keys [title series]}]
-       (let [top (- 0.86 (* i 0.26))
-             last? (= i (dec (count panels)))]
-         (concat
-          (map g/format [[:unset :key] [:unset :xlabel] [:unset :xtics]
-                         [:set :bmargin :at :screen (- top 0.15)] [:set :tmargin :at :screen top]
-                         [:set :title title] [:set :ylabel "Ring used (%)"]
-                         [:set :yrange (g/range 0 100)] [:set :ytics 25] [:set :grid :ytics :back]])
-          (plot-panel series)
-          (map g/format (concat [[:unset :title] [:unset :grid] [:unset :ytics]
-                                 [:set :ylabel "Evictions"] [:set :yrange (g/range -0.5 0.5)]
-                                 [:set :bmargin :at :screen (- top 0.205)]
-                                 [:set :tmargin :at :screen (- top 0.155)]]
-                                (when (zero? i)
-                                  [[:set :key (g/lit "at screen 0.53,0.93 center horizontal")]])
-                                (when last?
-                                  [[:set :xtics :out] [:set :xlabel "Elapsed time (s)"]])))
-          (plot-panel (evictions/undo-series buckets undo-type)))))
-     (range) evictions/undo-types panels)
-    ["unset multiplot" "unset output"])))
+  (let [complete (evictions/complete-seconds buckets)]
+    (render!
+     (concat
+      (map g/format
+           (concat (output-commands test "undo-evictions.png" (g/list 1000 1100))
+                   (shared-x-commands xrange)
+                   [[:set :multiplot :title "OrioleDB undo ring occupancy and evictions"]]))
+      (mapcat
+       (fn [i undo-type {:keys [title series]}]
+         (let [top (- 0.86 (* i 0.26))
+               last? (= i (dec (count panels)))]
+           (concat
+            (map g/format [[:unset :key] [:unset :xlabel] [:unset :xtics]
+                           [:set :bmargin :at :screen (- top 0.115)] [:set :tmargin :at :screen top]
+                           [:set :title title] [:set :ylabel "Ring used (%)"]
+                           [:set :yrange (g/range 0 100)] [:set :ytics 25] [:set :grid :ytics :back]])
+            (plot-panel series)
+            (map g/format (concat [[:unset :title] [:unset :grid]
+                                   [:set :bmargin :at :screen (- top 0.217)]
+                                   [:set :tmargin :at :screen (- top 0.128)]]
+                                  (when (zero? i) [(undo-key)])
+                                  (when last? (elapsed-axis))))
+            (rate-panel (evictions/undo-counts buckets undo-type) complete))))
+       (range) evictions/undo-types panels)
+      ["unset multiplot" "unset output"]))))
 
 (defn plot-undo! [test samples buckets xrange]
   (let [percentages (mapv #(undo-percentages samples %) evictions/undo-types)]
@@ -237,7 +289,8 @@
                     filename (str "page-stats-" suffix ".png")]
               :when (some #(Double/isFinite (double (second %))) (mapcat :data data))]
         (if trace?
-          (plot-pool-with-strips! test filename title data (evictions/pool-strips buckets pool) xrange)
+          (plot-pool-with-rates! test filename title data (evictions/pool-counts buckets pool)
+                                 (evictions/complete-seconds buckets) xrange)
           (perf/plot! {:preamble (into (output-commands test filename (g/list 1000 500))
                                        [[:set :key :outside :right]
                                         [:set :xlabel "Elapsed time (s)"]
