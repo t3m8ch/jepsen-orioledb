@@ -73,7 +73,23 @@
           (let [file (path test filename)]
             (is (> (.length file) 1000))
             (when (.exists file)
-              (is (= "PNG" (subs (slurp file :encoding "ISO-8859-1") 1 4)))))))
+              (is (= "PNG" (subs (slurp file :encoding "ISO-8859-1") 1 4))))))
+        (let [chart #(javax.imageio.ImageIO/read (path test "undo-evictions.png"))
+              before (slurp (path test "evictions.jsonl"))
+              file (path test "n1" "page-stats.jsonl")
+              records (ps/read-samples file)
+              undo (fn [type capacity last-used written]
+                     {:undo_type type :capacity_bytes capacity
+                      :last_used_location last-used :written_location written})]
+          (is (= 330 (.getHeight (chart))))
+          (spit file (str (json/generate-string
+                           (assoc (first records) :undo [(undo "row" 8 "5" "1")
+                                                         (undo "page" 8 "1" "2")
+                                                         (undo "system" 8 "10" "1")])) "\n"
+                          (slurp file)))
+          (is (= {:valid? true} (checker/check (ps/plot-checker) test [] {})))
+          (is (= 930 (.getHeight (chart))))
+          (is (= before (slurp (path test "evictions.jsonl"))))))
       (finally (doseq [file (reverse (file-seq dir))] (io/delete-file file))))))
 
 (deftest disabled-empty-and-unavailable-do-not-fabricate-plots
@@ -153,3 +169,33 @@
                (odb/cluster-config {:trace-evictions true})))
   (doseq [test [{} {:engine :postgres :trace-evictions true}]]
     (is (not (re-find #"debug1" (odb/cluster-config test))))))
+
+(defn undo-sample [elapsed capacity last-used written]
+  {:elapsed elapsed :available true
+   :undo [{:undo_type "row" :capacity_bytes capacity
+           :last_used_location last-used :written_location written}]})
+
+(deftest occupancy-subtracts-exactly-before-converting-to-percent
+  (let [samples [(undo-sample 0 8 "18446744073709551615" "18446744073709551612")
+                 {:elapsed 1 :available true :pools []}
+                 (undo-sample 2 8 "18446744073709551612" "18446744073709551613")
+                 (undo-sample 3 8 "18446744073709551615" "18446744073709551606")
+                 (undo-sample 4 0 "2" "1")
+                 (assoc (undo-sample 5 8 "2" "1") :available false)
+                 (undo-sample 6 8 "1" "1")
+                 (undo-sample 7 8 "9" "1")]]
+    (is (= [[0 37.5] [1 nil] [2 -12.5] [3 112.5] [4 nil] [5 nil] [6 0.0] [7 100.0]]
+           (ps/undo-percentages samples "row")))
+    (is (every? (comp nil? second) (ps/undo-percentages samples "page")))))
+
+(deftest sampler-start-only-requests-undo-for-traced-orioledb
+  (doseq [[opts args] [[{:trace-evictions true} ["undo"]]
+                       [{} []]
+                       [{:engine :postgres :trace-evictions true} nil]]]
+    (let [started (atom nil)]
+      (with-redefs [c/exec (fn [& _])
+                    jepsen.util/relative-time-nanos (constantly 0)
+                    cu/start-daemon! (fn [& argv] (reset! started argv))]
+        (ps/start! (assoc opts :page-stats-interval 1)))
+      (is (= args (when @started (vec (drop-while #(not= "undo" %) @started)))))
+      (is (= (some? args) (some? @started))))))
