@@ -255,7 +255,8 @@ exports these files to the host. After successful checksum verification, the res
 replaces `.cache/artifacts/current/`. The full build log is stored in `.cache/build.log`.
 `build-info.json` is also included in the installation archive. It contains revisions,
 build parameters, and exact runtime package versions. Traced builds also record
-`eviction_trace_patch_sha256`.
+`eviction_trace_patch_sha256`, the SHA-256 of the eviction-trace and undo-buffer-stats
+patch bytes concatenated in application order.
 
 This provides reproducibility of inputs and experimental conditions. Bit-for-bit identity
 of compilation results and the Jepsen concurrent schedule is not guaranteed.
@@ -391,8 +392,8 @@ plotting errors are reported under `:page-stats` without changing the workload's
 validity verdict. These are occupancy snapshots, not cumulative write or eviction
 counters; falling occupancy alone does not establish eviction activity.
 
-Use `--trace-evictions` to build OrioleDB with the tracked eviction-trace patch and enable
-DEBUG1 logging from startup. The runner selects the build before launching
+Use `--trace-evictions` to build OrioleDB with the tracked eviction-trace and
+undo-buffer-stats patches and enable DEBUG1 logging from startup. The runner selects the build before launching
 Jepsen. This reuses the PostgreSQL build and patches only the pinned OrioleDB
 source; no fork is needed. For a build without a test run, use
 `mise run build -- --trace-evictions`. Jepsen rejects missing or mismatched patch

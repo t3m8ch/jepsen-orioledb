@@ -26,10 +26,13 @@ fi
 cd /work/orioledb
 patch_sha256=
 if [[ $LAB_TRACE_EVICTIONS == 1 ]]; then
-  patch=/work/patches/orioledb-eviction-trace.patch
-  git apply --check "$patch"
-  git apply "$patch"
-  patch_sha256=$(sha256sum "$patch" | cut -d ' ' -f 1)
+  patches=(/work/patches/orioledb-eviction-trace.patch /work/patches/orioledb-undo-buffer-stats.patch)
+  for patch in "${patches[@]}"; do
+    git apply --check "$patch"
+    git apply "$patch"
+  done
+  # Match the ordered patch bytes hashed by the Jepsen launcher.
+  patch_sha256=$(cat "${patches[@]}" | sha256sum | cut -d ' ' -f 1)
 fi
 make -j "$jobs" USE_PGXS=1 IS_DEV=1 PG_CONFIG="$prefix/bin/pg_config"
 make USE_PGXS=1 IS_DEV=1 PG_CONFIG="$prefix/bin/pg_config" install

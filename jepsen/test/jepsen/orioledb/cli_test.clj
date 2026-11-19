@@ -122,7 +122,7 @@
   (let [dir (.toFile (Files/createTempDirectory "trace-artifact" (make-array java.nio.file.attribute.FileAttribute 0)))
         facts (io/file dir "build-info.json")
         run-count (atom 0)
-        sha (cli/eviction-patch-sha256)]
+        sha (cli/trace-patches-sha256)]
     (try
       (with-redefs [cli/required-env #(if (= "LAB_ARTIFACT" %) (str dir) (environment %))
                     jc/single-test-cmd (fn [_] {"test" {:run (fn [_] (swap! run-count inc))}

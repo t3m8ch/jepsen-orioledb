@@ -38,6 +38,7 @@ RUN git init /work/orioledb \
 
 COPY --chmod=0755 build-orioledb.sh /usr/local/bin/build-orioledb.sh
 COPY --chmod=0644 patches/orioledb-eviction-trace.patch /work/patches/orioledb-eviction-trace.patch
+COPY --chmod=0644 patches/orioledb-undo-buffer-stats.patch /work/patches/orioledb-undo-buffer-stats.patch
 ARG LAB_TRACE_EVICTIONS=0
 ARG LAB_DEBIAN_IMAGE
 ARG LAB_DEBIAN_VERSION
