@@ -60,11 +60,14 @@ class TestRunnerTests(unittest.TestCase):
         flag = "--trace-evictions"
         for args, trace in [([flag], True),
                             ([flag + "=true"], True),
+                            (["--time-limit", "5", flag], True),
                             ([flag, "--engine", "orioledb"], True),
                             (["--engine=orioledb", flag], True),
                             ([flag, "--engine", "postgres"], False),
                             (["--engine=postgres", flag], False),
-                            (["--", flag], False)]:
+                            (["--", flag], False),
+                            (["--", flag + "=true"], False),
+                            ([flag, "--engine"], False)]:
             with self.subTest(args=args), \
                     patch.object(runner.subprocess, "run", side_effect=[
                         subprocess.CompletedProcess([], 0),
