@@ -1,11 +1,15 @@
 (ns jepsen.orioledb.cli-test
-  (:require [clojure.test :refer :all]
+  (:require [cheshire.core :as json]
+            [clojure.java.io :as io]
+            [clojure.test :refer :all]
             [clojure.string :as str]
             [clojure.tools.cli :as tools-cli]
+            [jepsen.cli :as jc]
             [jepsen.db :as db]
             [jepsen.orioledb.cli :as cli]
             [jepsen.orioledb.db :as orioledb-db]
-            [jepsen.postgres.client :as pg]))
+            [jepsen.postgres.client :as pg])
+  (:import (java.nio.file Files)))
 
 (def environment
   {"LAB_ARTIFACT" "/unused/cache"
@@ -96,14 +100,49 @@
   (doseq [value ["0" "-1" "NaN" "Infinity" "-Infinity" "abc" "1e999"]]
     (is (seq (:errors (tools-cli/parse-opts ["--page-stats-interval" value] cli/cli-opts))))))
 
+(def trace-opts
+  {:trace-evictions true :workload :append :isolation :read-committed
+   :nemesis [] :nemesis-interval 5 :rate 10 :time-limit 1
+   :concurrency 1 :key-count 10 :key-dist :uniform
+   :max-txn-length 4 :max-writes-per-key 256})
+
 (deftest tracing-defaults-sampling-and-preserves-explicit-interval
   (with-redefs [cli/required-env environment
                 cli/artifact-checksum (constantly "checksum")]
+    (is (:trace-evictions (:options (tools-cli/parse-opts ["--trace-evictions"] cli/cli-opts))))
     (doseq [interval [nil 0.25]]
-      (let [opts {:trace-page-writes true :workload :append :isolation :read-committed
-                  :nemesis [] :nemesis-interval 5 :rate 10 :time-limit 1
-                  :concurrency 1 :key-count 10 :key-dist :uniform
-                  :max-txn-length 4 :max-writes-per-key 256}
-            test (cli/orioledb-test (cond-> opts interval (assoc :page-stats-interval interval)))]
+      (let [test (cli/orioledb-test (cond-> trace-opts interval (assoc :page-stats-interval interval)))]
         (is (= (or interval 1.0) (:page-stats-interval test)))
-        (is (:trace-page-writes test))))))
+        (is (:trace-evictions test))))
+    (let [test (cli/orioledb-test (assoc trace-opts :engine :postgres))]
+      (is (not (:trace-evictions test)))
+      (is (nil? (:page-stats-interval test))))))
+
+(deftest trace-artifact-must-match-before-test-setup
+  (let [dir (.toFile (Files/createTempDirectory "trace-artifact" (make-array java.nio.file.attribute.FileAttribute 0)))
+        facts (io/file dir "build-info.json")
+        run-count (atom 0)
+        sha (cli/trace-patches-sha256)]
+    (try
+      (with-redefs [cli/required-env #(if (= "LAB_ARTIFACT" %) (str dir) (environment %))
+                    jc/single-test-cmd (fn [_] {"test" {:run (fn [_] (swap! run-count inc))}
+                                                "analyze" {:run (constantly :analyzed)}})]
+        (let [commands (cli/commands)
+              run (get-in commands ["test" :run])]
+          (doseq [metadata [{} {:eviction_trace_patch_sha256 (apply str (repeat 64 "0"))}]]
+            (spit facts (json/generate-string metadata))
+            (is (thrown-with-msg? clojure.lang.ExceptionInfo #"requires an artifact"
+                                  (run {:options trace-opts}))))
+          (is (= :analyzed ((get-in commands ["analyze" :run]) {:options trace-opts})))
+          (is (zero? @run-count))
+          (run {:options (assoc trace-opts :engine :postgres)})
+          (is (= 1 @run-count))
+          (is (re-matches #"[0-9a-f]{64}" sha))
+          (spit facts (json/generate-string {:eviction_trace_patch_sha256 sha}))
+          (with-redefs [cli/read-archive-build-info (constantly {})]
+            (is (thrown-with-msg? clojure.lang.ExceptionInfo #"requires an artifact"
+                                  (run {:options trace-opts}))))
+          (with-redefs [cli/read-archive-build-info (constantly {:eviction_trace_patch_sha256 sha})]
+            (run {:options trace-opts})
+            (is (= 2 @run-count)))))
+      (finally (doseq [file (reverse (file-seq dir))] (io/delete-file file))))))

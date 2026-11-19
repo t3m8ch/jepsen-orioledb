@@ -1,5 +1,9 @@
 # Page-write observation validation
 
+These runs used the old `--trace-page-writes` mode. To reproduce them, use
+repository revision `5a1e750`. The new `--trace-evictions` mode measures different
+events and does not reproduce these write-attempt counts.
+
 The implementation uses the two existing DEBUG1 messages in OrioleDB
 `47b822246687cf2e16f677496f6a1d1330dc2912`, verified against
 `src/btree/io.c` lines 1645 and 1718 at that SHA. PostgreSQL is pinned to

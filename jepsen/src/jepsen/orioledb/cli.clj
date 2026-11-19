@@ -1,6 +1,8 @@
 (ns jepsen.orioledb.cli
   (:gen-class)
-  (:require [clojure.java.io :as io]
+  (:require [cheshire.core :as json]
+            [clojure.java.io :as io]
+            [clojure.java.shell :as shell]
             [clojure.string :as str]
             [jepsen.checker :as checker]
             [jepsen.cli :as cli]
@@ -12,7 +14,9 @@
             [jepsen.sql :as sql]
             [jepsen.tests :as tests]
             [jepsen.orioledb.page-stats :as page-stats]
-            [jepsen.orioledb.db :as db]))
+            [jepsen.orioledb.db :as db])
+  (:import (java.security MessageDigest)
+           (java.util HexFormat)))
 
 (defn required-env [key]
   (or (not-empty (System/getenv key))
@@ -25,16 +29,46 @@
             (str/split-lines (slurp (io/file artifact "SHA256SUMS"))))
       (throw (ex-info "Artifact archive is missing from SHA256SUMS" {}))))
 
+(defn trace-patches-sha256 []
+  (let [digest (MessageDigest/getInstance "SHA-256")]
+    (doseq [filename ["orioledb-eviction-trace.patch" "orioledb-undo-buffer-stats.patch"]]
+      (with-open [patch (io/input-stream (io/resource filename))]
+        (.update digest (.readAllBytes patch))))
+    (.formatHex (HexFormat/of) (.digest digest))))
+
+(defn read-archive-build-info [artifact]
+  (let [{:keys [exit out err]}
+        (shell/sh "bsdtar"
+                  "-xOf"
+                  (str (io/file artifact "pgsql.tar.gz")) "./build-info.json")]
+    (when-not (zero? exit)
+      (throw (ex-info "Cannot read build-info.json inside artifact" {:artifact artifact :error err})))
+    (json/parse-string out true)))
+
+(defn verify-run-artifact! [{:keys [trace-evictions engine]}]
+  (when (and trace-evictions (not= :postgres engine))
+    (let [artifact (required-env "LAB_ARTIFACT")
+          expected (trace-patches-sha256)
+          facts (io/file artifact "build-info.json")
+          actual (when (.isFile facts)
+                   (:eviction_trace_patch_sha256 (json/parse-string (slurp facts) true)))
+          embedded (when (= expected actual)
+                     (:eviction_trace_patch_sha256 (read-archive-build-info artifact)))]
+      (when-not (= expected actual embedded)
+        (throw (ex-info "OrioleDB eviction tracing requires an artifact with the current trace patches; rebuild with --trace-evictions"
+                        {:expected expected :actual actual :embedded embedded :artifact artifact}))))))
+
 (defn open [test _node]
   (pg-client/open test (:data-host test)))
 
 (def workloads (sql/workloads {:open open :error-fn pg-client/error-fn}))
 
 (defn orioledb-test [opts]
-  (let [opts (cond-> opts
-               (and (:trace-page-writes opts) (nil? (:page-stats-interval opts)))
+  (let [engine (or (:engine opts) :orioledb)
+        opts (cond-> (assoc opts :engine engine)
+               (= :postgres engine) (dissoc :trace-evictions)
+               (and (= :orioledb engine) (:trace-evictions opts) (nil? (:page-stats-interval opts)))
                (assoc :page-stats-interval 1.0))
-        engine (or (:engine opts) :orioledb)
         artifact (required-env "LAB_ARTIFACT")
         host (required-env "LAB_SSH_HOST")
         database (db/database)
@@ -99,7 +133,7 @@
     [nil "--postgres-user USER" "Database user" :default "postgres"]
     [nil "--postgres-port PORT" "Database port" :default 5432 :parse-fn parse-long]
     [nil "--postgres-sslmode MODE" "JDBC SSL mode" :default "disable"]
-    [nil "--trace-page-writes" "Observe OrioleDB page-write attempts (DEBUG1); enables 1s occupancy sampling unless specified; ignored with --engine postgres"]
+    [nil "--trace-evictions" "Trace OrioleDB evictions and non-evicting writeback (DEBUG1); defaults to 1s occupancy sampling; ignored with --engine postgres"]
     [nil "--page-stats-interval SECONDS" "Collect and plot OrioleDB pool occupancy (disabled if omitted; ignored with --engine postgres)"
      :parse-fn #(Double/parseDouble %)
      :validate [#(and (Double/isFinite %) (pos? %)) "Must be a finite positive duration"]]
@@ -114,9 +148,16 @@
      :parse-fn parse-double
      :validate [pos? "Must be positive"]]]))
 
+(defn commands []
+  (let [commands (cli/single-test-cmd {:test-fn orioledb-test
+                                       :opt-spec cli-opts
+                                       :opt-fn sql/opt-fn})]
+    ;; Offline analyze reconstructs the test without installing an artifact.
+    (update-in commands ["test" :run]
+               (fn [run]
+                 (fn [{:keys [options] :as parsed}]
+                   (verify-run-artifact! options)
+                   (run parsed))))))
+
 (defn -main [& args]
-  (cli/run! (merge (cli/single-test-cmd {:test-fn orioledb-test
-                                         :opt-spec cli-opts
-                                         :opt-fn sql/opt-fn})
-                   (cli/serve-cmd))
-            args))
+  (cli/run! (merge (commands) (cli/serve-cmd)) args))

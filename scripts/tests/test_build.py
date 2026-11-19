@@ -28,6 +28,7 @@ for arg in "$@"; do
   case "$arg" in type=local,dest=*) output=${arg#type=local,dest=} ;; esac
 done
 echo "stub build log"
+printf '%s\n' "$@"
 printf new > "$output/pgsql.tar.gz"
 if [[ $OUTCOME == build-error ]]; then exit 7; fi
 (cd "$output" && sha256sum pgsql.tar.gz > SHA256SUMS)
@@ -35,12 +36,15 @@ if [[ $OUTCOME == checksum-error ]]; then printf corrupt >> "$output/pgsql.tar.g
 ''')
                 podman.chmod(0o755)
                 result = subprocess.run(
-                    ["bash", "scripts/build.sh"], cwd=root, capture_output=True, text=True,
+                    ["bash", "scripts/build.sh"] + (["--trace-evictions"] if outcome == "success" else []),
+                    cwd=root, capture_output=True, text=True,
                     env=dict(os.environ, PATH=str(binary) + os.pathsep + os.environ["PATH"],
                              OUTCOME=outcome),
                 )
                 self.assertEqual(list(current.parent.glob(".export-*")), [])
-                self.assertIn("stub build log", (root / ".cache/build.log").read_text())
+                log = (root / ".cache/build.log").read_text()
+                self.assertIn("stub build log", log)
+                self.assertIn(f"LAB_TRACE_EVICTIONS={int(outcome == 'success')}\n", log)
                 if outcome == "success":
                     self.assertEqual(result.returncode, 0, result.stderr)
                     self.assertEqual((current / "pgsql.tar.gz").read_text(), "new")

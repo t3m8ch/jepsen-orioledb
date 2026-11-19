@@ -1,0 +1,138 @@
+diff --git a/src/utils/page_pool.c b/src/utils/page_pool.c
+--- a/src/utils/page_pool.c
++++ b/src/utils/page_pool.c
+@@ -450,6 +450,8 @@
+ 
+ 	while (true)
+ 	{
++		OWalkPageResult result;
++
+ 		if (shutdown_requested != NULL && *shutdown_requested)
+ 			break;
+ 
+@@ -458,10 +460,30 @@
+ 
+ 		Assert(blkno >= o_pool->offset && blkno < o_pool->offset + o_pool->size);
+ 
+-		if (walk_page(blkno, evict) != OWalkPageSkipped)
++		result = walk_page(blkno, evict);
++		if (result != OWalkPageSkipped)
+ 		{
+ 			Assert(!have_locked_pages());
+ 			pg_atomic_fetch_add_u64(o_pool->pageEvictCount, 1);
++
++			if (result == OWalkPageEvicted || result == OWalkPageWritten)
++			{
++				const char *poolName;
++
++				if (pool == get_ppool(OPagePoolMain))
++					poolName = "main";
++				else if (pool == get_ppool(OPagePoolFreeTree))
++					poolName = "free_tree";
++				else
++				{
++					Assert(pool == get_ppool(OPagePoolCatalog));
++					poolName = "catalog";
++				}
++				elog(DEBUG1, "orioledb_trace event=%s pool=%s candidate_blkno=" UINT64_FORMAT,
++					 result == OWalkPageEvicted ? "btree_evict" :
++					 "btree_writeback",
++					 poolName, blkno);
++			}
+ 			break;
+ 		}
+ 		Assert(!have_locked_pages());
+diff --git a/include/transam/undo.h b/include/transam/undo.h
+--- a/include/transam/undo.h
++++ b/include/transam/undo.h
+@@ -423,7 +423,7 @@
+ extern void evict_undo_to_disk(UndoLogType undoType,
+ 							   UndoLocation targetUndoLocation,
+ 							   UndoLocation minProcReservedLocation,
+-							   bool attempt);
++							   bool attempt, const char *reason);
+ extern bool reserve_undo_size_extended(UndoLogType undoType, Size size,
+ 									   bool waitForUndoLocation);
+ extern void steal_reserved_undo_size(UndoLogType undoType, Size size);
+diff --git a/src/transam/undo.c b/src/transam/undo.c
+--- a/src/transam/undo.c
++++ b/src/transam/undo.c
+@@ -1907,7 +1907,7 @@
+ 			UndoLocation reservedNow = pg_atomic_read_u64(&meta->minProcReservedLocation);
+ 
+ 			evict_undo_to_disk(undoType, Min(pageLoc, reservedNow),
+-							   reservedNow, true);
++							   reservedNow, true, "checkpoint_pressure");
+ 		}
+ 	}
+ }
+@@ -1919,7 +1919,7 @@
+ evict_undo_to_disk(UndoLogType undoType,
+ 				   UndoLocation targetUndoLocation,
+ 				   UndoLocation minProcReservedLocation,
+-				   bool attempt)
++				   bool attempt, const char *reason)
+ {
+ 	UndoLocation retainUndoLocation,
+ 				writtenLocation,
+@@ -2053,6 +2053,12 @@
+ 	SpinLockRelease(&meta->minUndoLocationsMutex);
+ 
+ 	LWLockRelease(&meta->undoWriteLock);
++
++	elog(DEBUG1, "orioledb_trace event=undo_ring_evict undo_type=%s reason=%s "
++		 "from=" UINT64_FORMAT " to=" UINT64_FORMAT " bytes=" UINT64_FORMAT,
++		 get_undo_type_name(undoType), reason,
++		 retainUndoLocation, targetUndoLocation,
++		 targetUndoLocation - retainUndoLocation);
+ }
+ 
+ /*
+@@ -2091,7 +2097,7 @@
+ 
+ 	if (targetLocation < minProcReservedLocation)
+ 		evict_undo_to_disk(undoType, targetLocation, minProcReservedLocation,
+-						   true);
++						   true, "backend_opportunistic");
+ }
+ 
+ bool
+@@ -2180,7 +2186,7 @@
+ 	 * exclusive acquisition behind it.
+ 	 */
+ 	evict_undo_to_disk(undoType, location + size - circularBufferSize,
+-					   minProcReservedLocation, true);
++					   minProcReservedLocation, true, "backend_reserve");
+ 	if (location + size <=
+ 		pg_atomic_read_u64(&meta->writtenLocation) + circularBufferSize)
+ 		return true;
+@@ -2191,7 +2197,7 @@
+ 		return true;
+ 
+ 	evict_undo_to_disk(undoType, location + size - circularBufferSize,
+-					   minProcReservedLocation, false);
++					   minProcReservedLocation, false, "backend_reserve");
+ 	Assert(location + size <= pg_atomic_read_u64(&meta->writtenLocation) + circularBufferSize);
+ 
+ 	return true;
+@@ -3592,7 +3598,7 @@
+ 		 */
+ 		evict_undo_to_disk(undoType, memoryUndoLocation,
+ 						   pg_atomic_read_u64(&meta->minProcReservedLocation),
+-						   false);
++						   false, "inplace_rewrite");
+ 	}
+ 
+ 	/* Finally perform writing to the file */
+diff --git a/src/workers/bgwriter.c b/src/workers/bgwriter.c
+--- a/src/workers/bgwriter.c
++++ b/src/workers/bgwriter.c
+@@ -203,7 +203,7 @@
+ 
+ 					if (targetLocation < minProcReservedLocation)
+ 						evict_undo_to_disk((UndoLogType) j, targetLocation,
+-										   minProcReservedLocation, true);
++										   minProcReservedLocation, true, "bgwriter");
+ 				}
+ 				else
+ 				{
