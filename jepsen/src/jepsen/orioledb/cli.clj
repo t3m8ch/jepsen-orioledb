@@ -13,6 +13,7 @@
             [jepsen.postgres.cli :as pg-cli]
             [jepsen.sql :as sql]
             [jepsen.tests :as tests]
+            [jepsen.orioledb.nemesis :as snapshot]
             [jepsen.orioledb.page-stats :as page-stats]
             [jepsen.orioledb.db :as db])
   (:import (java.security MessageDigest)
@@ -74,11 +75,26 @@
         database (db/database)
         workload (let [make-workload (workloads-builders (:workload opts))]
                    (make-workload opts))
-        nemesis (nc/nemesis-package
-                 {:db database :nodes [host] :faults (:nemesis opts)
-                  :pause {:targets [:all]}
-                  :kill {:targets [:all]}
-                  :interval (:nemesis-interval opts)})]
+        faults (set (:nemesis opts))
+        db-faults (disj faults :hold-snapshot)
+        db-pkg (when (seq db-faults)
+                 (nc/db-package
+                  {:db database
+                   :faults db-faults
+                   :pause {:targets [:all]}
+                   :kill {:targets [:all]}
+                   :interval (:nemesis-interval opts)}))
+        snapshot-pkg (when (faults :hold-snapshot)
+                       (snapshot/snapshot-package))
+        combined (nc/compose-packages (remove nil? [db-pkg snapshot-pkg]))
+        nemesis (if snapshot-pkg
+                  (assoc combined :generator
+                         (gen/phases
+                          (:generator snapshot-pkg)
+                          (if db-pkg
+                            (:generator db-pkg)
+                            (gen/sleep (:time-limit opts)))))
+                  combined)]
     (merge tests/noop-test opts
            {:engine engine
             :name (str (name engine) "-" (name (:workload opts)) "-" (name (:isolation opts)))
@@ -128,9 +144,11 @@
      :default :append
      :parse-fn keyword
      :validate [workloads-builders (cli/one-of workloads-builders)]]
-    [nil "--nemesis FAULTS" "none, kill, pause, or kill,pause"
-     :default [] :parse-fn pg-cli/parse-nemesis-spec
-     :validate [(partial every? #{:kill :pause}) "Supported faults: kill and pause"]]
+    [nil "--nemesis FAULTS" "Comma-separated faults: kill, pause, hold-snapshot; or none"
+     :default []
+     :parse-fn pg-cli/parse-nemesis-spec
+     :validate [#(every? #{:kill :pause :hold-snapshot} %)
+                "Supported faults: kill, pause, hold-snapshot"]]
     [nil "--postgres-user USER" "Database user" :default "postgres"]
     [nil "--postgres-port PORT" "Database port" :default 5432 :parse-fn parse-long]
     [nil "--postgres-sslmode MODE" "JDBC SSL mode" :default "disable"]
