@@ -163,6 +163,16 @@ lein test
 lein check
 """
 
+[tasks."clj:format-check"]
+description = "Check formatting of the Clojure adapter without changing files"
+tools."github:weavejester/cljfmt" = { version = "0.16.6", asset_pattern = "cljfmt-*-linux-amd64-static.tar.gz" }
+run = "cljfmt check jepsen/src jepsen/test"
+
+[tasks."clj:lint"]
+description = "Lint the Clojure adapter and its tests"
+tools.clj-kondo = "2026.10.26"
+run = "clj-kondo --lint jepsen/src jepsen/test"
+
 [tasks."upstream:sql"]
 description = "Explicitly pull SQL subtree updates (requires clean Git state)"
 run = "git subtree pull --prefix=vendor/jepsen-sql https://github.com/jepsen-io/sql.git main --squash"
