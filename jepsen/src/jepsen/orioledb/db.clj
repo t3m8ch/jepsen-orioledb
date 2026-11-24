@@ -141,6 +141,27 @@ log_line_prefix = '%m [%p] '
     ;; Unmount normally and propagate failures before deleting the backing store.
     (c/sudo (:user pg-lazyfs) (c/exec :fusermount3 :-u data-dir))))
 
+(defn await-postgres-exit! []
+  ;; A killed process may remain as a zombie, but can no longer issue writes.
+  (c/su
+   (c/exec :timeout "10s" :bash :-euc
+           (str "while :; do "
+                "processes=$(ps -u postgres -o stat=,comm=) || test $? = 1; "
+                "live=$(awk '$2 == \"postgres\" && $1 !~ /^Z/ { print; exit }' <<< \"$processes\"); "
+                "[[ -n $live ]] || exit 0; sleep 0.1; done"))))
+
+(defn lose-unfsynced-writes! []
+  (let [log (:log-file pg-lazyfs)
+        offset (inc (parse-long (c/exec :stat :-c "%s" log)))]
+    (lazyfs/lose-unfsynced-writes! pg-lazyfs)
+    ;; The FIFO write only submits the request. Ignore acknowledgments from
+    ;; earlier requests by reading only bytes appended after submission began.
+    (c/exec :timeout "10s" :bash :-euc
+            (str "until tail -c \"+$1\" -- \"$2\" | grep -Fq -- 'cache is cleared.'; "
+                 "do sleep 0.1; done")
+            "bash" offset log)
+    :cache-cleared))
+
 (defn setup-cluster! [test]
   (c/su
    (c/exec :install :-d :-o "postgres" :-g "postgres" :-m "0755" data-dir)
@@ -153,50 +174,74 @@ log_line_prefix = '%m [%p] '
           (cu/write-file! (cluster-config test)
                           (str data-dir "/postgresql.conf"))
           (cu/write-file! (slurp (io/resource "orioledb-pg_hba.conf"))
-                          (str data-dir "/pg_hba.conf")))
+                          (str data-dir "/pg_hba.conf"))
+          (when (:lose-unfsynced-writes test)
+            ;; These writes follow initdb's own sync. Keep the lab config
+            ;; durable before the first cache-loss fault.
+            (c/exec :sync (str data-dir "/postgresql.conf")
+                    (str data-dir "/pg_hba.conf"))))
   (check-cluster! test))
 
 (defn database []
-  (reify
-    db/DB
-    (setup! [_ test _node]
-      (page-stats/stop!)
-      (install! test)
-      (page-stats/prepare!)
-      (setup-cluster! test))
-    (teardown! [_ _test _node]
-      (page-stats/stop!)
-      (signal! "CONT")
-      (when (running?)
-        (c/sudo "postgres"
-                (c/exec (binary "pg_ctl") :-D data-dir :-m :immediate :-w :-t 60 :stop)))
-      (signal! "KILL")
-      ;; Also clean up a mount left by an interrupted run without --lazyfs.
-      (unmount-pgdata!)
-      ;; Jepsen collects LogFiles before this teardown. Keep logs for diagnostics.
-      (c/su (c/exec :rm :-rf data-dir (:lazyfs-dir pg-lazyfs) prefix archive)))
+  (let [unconfirmed-nodes (atom #{})]
+    (reify
+      db/DB
+      (setup! [_ test node]
+        (swap! unconfirmed-nodes disj node)
+        (page-stats/stop!)
+        (install! test)
+        (page-stats/prepare!)
+        (setup-cluster! test))
+      (teardown! [_ _test _node]
+        (page-stats/stop!)
+        (signal! "CONT")
+        (when (running?)
+          (c/sudo "postgres"
+                  (c/exec (binary "pg_ctl") :-D data-dir :-m :immediate :-w :-t 60 :stop)))
+        (signal! "KILL")
+        ;; Also clean up a mount left by an interrupted run without --lazyfs.
+        (unmount-pgdata!)
+        ;; Jepsen collects LogFiles before this teardown. Keep logs for diagnostics.
+        (c/su (c/exec :rm :-rf data-dir (:lazyfs-dir pg-lazyfs) prefix archive)))
 
-    db/Kill
-    (start! [_ test _node] (start! test))
-    (kill! [_ _test _node] (signal! "KILL"))
+      db/Kill
+      (start! [_ test node]
+        (when (contains? @unconfirmed-nodes node)
+          (throw (ex-info "Cannot restart PostgreSQL after unconfirmed LazyFS cache loss"
+                          {:node node})))
+        (start! test))
+      (kill! [_ test node]
+        (if-not (:lose-unfsynced-writes test)
+          (signal! "KILL")
+          (do
+            ;; After a timeout the previous request may still complete. Never
+            ;; submit another one on this node or mistake its ACK for a new one.
+            (when (contains? @unconfirmed-nodes node)
+              (throw (ex-info "Previous LazyFS cache loss was not confirmed" {:node node})))
+            (swap! unconfirmed-nodes conj node)
+            (signal! "KILL")
+            (await-postgres-exit!)
+            (let [result (lose-unfsynced-writes!)]
+              (swap! unconfirmed-nodes disj node)
+              result))))
 
-    db/Pause
-    (pause! [_ _test _node] (signal! "STOP"))
-    (resume! [_ _test _node] (signal! "CONT"))
+      db/Pause
+      (pause! [_ _test _node] (signal! "STOP"))
+      (resume! [_ _test _node] (signal! "CONT"))
 
-    db/LogFiles
-    (log-files [_ test _node]
-      (page-stats/stop!)
-      ;; PGDATA is 0700; stage copies readable by the SSH user for Jepsen download.
-      (c/su
-       (doseq [filename ["postgresql.conf" "pg_hba.conf"]]
-         (when (cu/exists? (str data-dir "/" filename))
-           (c/exec :cp (str data-dir "/" filename) (str log-dir "/" filename))
-           (c/exec :chmod "0644" (str log-dir "/" filename)))))
-      (cond-> {log-file "postgresql.log"
-               build-info-file "build-info.json"
-               (str log-dir "/postgresql.conf") "postgresql.conf"
-               (str log-dir "/pg_hba.conf") "pg_hba.conf"}
-        (page-stats/enabled? test) (assoc page-stats/log-file "page-stats.jsonl")
-        (and (:lazyfs test) (cu/exists? (:log-file pg-lazyfs)))
-        (assoc (:log-file pg-lazyfs) "lazyfs.log")))))
+      db/LogFiles
+      (log-files [_ test _node]
+        (page-stats/stop!)
+        ;; PGDATA is 0700; stage copies readable by the SSH user for Jepsen download.
+        (c/su
+         (doseq [filename ["postgresql.conf" "pg_hba.conf"]]
+           (when (cu/exists? (str data-dir "/" filename))
+             (c/exec :cp (str data-dir "/" filename) (str log-dir "/" filename))
+             (c/exec :chmod "0644" (str log-dir "/" filename)))))
+        (cond-> {log-file "postgresql.log"
+                 build-info-file "build-info.json"
+                 (str log-dir "/postgresql.conf") "postgresql.conf"
+                 (str log-dir "/pg_hba.conf") "pg_hba.conf"}
+          (page-stats/enabled? test) (assoc page-stats/log-file "page-stats.jsonl")
+          (and (:lazyfs test) (cu/exists? (:log-file pg-lazyfs)))
+          (assoc (:log-file pg-lazyfs) "lazyfs.log"))))))

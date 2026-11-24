@@ -13,6 +13,7 @@
             [jepsen.postgres.cli :as pg-cli]
             [jepsen.sql :as sql]
             [jepsen.tests :as tests]
+            [jepsen.orioledb.checker :as orioledb-checker]
             [jepsen.orioledb.nemesis :as snapshot]
             [jepsen.orioledb.page-stats :as page-stats]
             [jepsen.orioledb.db :as db])
@@ -114,6 +115,7 @@
                        (:nemesis nemesis))
             :checker (checker/compose
                       {:page-stats (page-stats/plot-checker)
+                       :lose-unfsynced-writes (orioledb-checker/lose-unfsynced-writes-checker)
                        :stats (checker/stats)
                        :exceptions (checker/unhandled-exceptions)
                        :perf (checker/perf {:nemeses (:perf nemesis)})
@@ -152,7 +154,8 @@
     [nil "--postgres-user USER" "Database user" :default "postgres"]
     [nil "--postgres-port PORT" "Database port" :default 5432 :parse-fn parse-long]
     [nil "--postgres-sslmode MODE" "JDBC SSL mode" :default "disable"]
-    [nil "--lazyfs" "Run PostgreSQL on LazyFS without injecting filesystem faults"]
+    [nil "--lazyfs" "Run PostgreSQL on LazyFS"]
+    [nil "--lose-unfsynced-writes" "Drop the LazyFS cache after killing PostgreSQL; requires --lazyfs and --nemesis kill"]
     [nil "--trace-evictions" "Trace OrioleDB evictions and non-evicting writeback (DEBUG1); defaults to 1s occupancy sampling; ignored with --engine postgres"]
     [nil "--page-stats-interval SECONDS" "Collect and plot OrioleDB pool occupancy (disabled if omitted; ignored with --engine postgres)"
      :parse-fn #(Double/parseDouble %)
@@ -168,10 +171,16 @@
      :parse-fn parse-double
      :validate [pos? "Must be positive"]]]))
 
+(defn opt-fn [parsed]
+  (let [{:keys [lose-unfsynced-writes lazyfs nemesis]} (:options parsed)]
+    (cond-> (sql/opt-fn parsed)
+      (and lose-unfsynced-writes (not (and lazyfs (some #{:kill} nemesis))))
+      (update :errors (fnil conj []) "--lose-unfsynced-writes requires --lazyfs and --nemesis kill"))))
+
 (defn commands []
   (let [commands (cli/single-test-cmd {:test-fn orioledb-test
                                        :opt-spec cli-opts
-                                       :opt-fn sql/opt-fn})]
+                                       :opt-fn opt-fn})]
     ;; Offline analyze reconstructs the test without installing an artifact.
     (update-in commands ["test" :run]
                (fn [run]

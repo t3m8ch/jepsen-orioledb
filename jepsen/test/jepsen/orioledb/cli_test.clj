@@ -152,3 +152,12 @@
             (run {:options trace-opts})
             (is (= 2 @run-count)))))
       (finally (doseq [file (reverse (file-seq dir))] (io/delete-file file))))))
+
+(deftest lose-unfsynced-writes-requires-lazyfs-and-kill
+  (doseq [[args valid?] [[[] true]
+                         [["--lose-unfsynced-writes"] false]
+                         [["--lose-unfsynced-writes" "--lazyfs"] false]
+                         [["--lose-unfsynced-writes" "--nemesis" "kill"] false]
+                         [["--lose-unfsynced-writes" "--lazyfs" "--nemesis" "kill,pause"] true]]]
+    (let [parsed (cli/opt-fn (tools-cli/parse-opts args cli/cli-opts))]
+      (is (= valid? (empty? (:errors parsed))) (pr-str args)))))

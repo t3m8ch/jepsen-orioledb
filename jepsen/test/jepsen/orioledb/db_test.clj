@@ -3,6 +3,8 @@
             [clojure.test :refer :all]
             [jepsen.control :as c]
             [jepsen.control.util :as cu]
+            [jepsen.db :as jdb]
+            [jepsen.lazyfs :as lazyfs]
             [jepsen.orioledb.db :as db]))
 
 (deftest lazyfs-mount-precedes-initdb-when-enabled
@@ -100,3 +102,55 @@
         (fn [statements]
           (db/check-cluster! {:engine engine})
           (is (= extension? (boolean (some #{create-extension} @statements)))))))))
+
+(deftest kill-only-clears-cache-when-enabled-and-after-exit
+  (let [steps (atom [])
+        database (db/database)]
+    (with-redefs [db/signal! #(swap! steps conj %)
+                  db/await-postgres-exit! #(swap! steps conj :exit)
+                  db/lose-unfsynced-writes! #(do (swap! steps conj :clear) :cache-cleared)]
+      (jdb/kill! database {:lazyfs true} "n1")
+      (is (= ["KILL"] @steps))
+      (reset! steps [])
+      (is (= :cache-cleared (jdb/kill! database {:lose-unfsynced-writes true} "n1")))
+      (is (= ["KILL" :exit :clear] @steps)))))
+
+(deftest unconfirmed-cache-loss-blocks-restart-and-retry
+  (let [database (db/database)
+        test {:lose-unfsynced-writes true}]
+    (with-redefs [db/signal! (fn [_])
+                  db/await-postgres-exit! (fn [])
+                  db/lose-unfsynced-writes! #(throw (ex-info "timeout" {}))
+                  db/start! (constantly :started)]
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"timeout"
+                            (jdb/kill! database test "n1")))
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Cannot restart"
+                            (jdb/start! database test "n1")))
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Previous LazyFS cache loss"
+                            (jdb/kill! database test "n1"))))))
+
+(deftest cache-drop-waits-for-log-appended-after-request
+  (let [steps (atom [])]
+    (with-redefs [c/exec (fn [& args]
+                          (swap! steps conj args)
+                          (when (= :stat (first args)) "42"))
+                  lazyfs/lose-unfsynced-writes! #(swap! steps conj [:request %])]
+      (is (= :cache-cleared (db/lose-unfsynced-writes!)))
+      (let [[stat request wait] @steps]
+        (is (= :stat (first stat)))
+        (is (= [:request db/pg-lazyfs] request))
+        (is (= :timeout (first wait)))
+        (is (= [43 (:log-file db/pg-lazyfs)] (vec (take-last 2 wait))))))))
+
+(deftest cache-loss-mode-syncs-config-before-first-start
+  (doseq [enabled? [false true]]
+    (let [steps (atom [])]
+      (with-redefs [c/exec (fn [& [cmd & args]]
+                             (when (= :sync cmd)
+                               (swap! steps conj (vec args))))
+                    cu/write-file! (fn [_ path] (swap! steps conj path))
+                    db/check-cluster! (fn [_] (swap! steps conj :start))]
+        (db/setup-cluster! {:lose-unfsynced-writes enabled?}))
+      (let [conf (str db/data-dir "/postgresql.conf")
+            hba (str db/data-dir "/pg_hba.conf")]
+        (is (= (if enabled? [conf hba [conf hba] :start] [conf hba :start]) @steps))))))

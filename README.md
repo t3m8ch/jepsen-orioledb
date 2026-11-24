@@ -191,8 +191,22 @@ mise run test:run -- --engine postgres --workload append --time-limit 30 --nemes
 ```
 
 `--lazyfs` also works with `--engine orioledb`. It only changes where PostgreSQL
-stores data; it does not inject cache loss or change the existing nemeses.
+stores data; by itself, it does not inject cache loss or change the existing nemeses.
 Jepsen collects `lazyfs.log` and unmounts `PGDATA` during teardown.
+
+To discard unsynced writes after each PostgreSQL `SIGKILL`, add
+`--lose-unfsynced-writes` to a run that also enables `--lazyfs` and the `kill`
+nemesis:
+
+```sh
+mise run test:run -- --engine postgres --workload append --time-limit 30 \
+  --lazyfs --nemesis kill --lose-unfsynced-writes
+```
+
+Jepsen waits for PostgreSQL to exit and for LazyFS to confirm the cache drop
+before allowing recovery. Missing confirmation blocks the next restart on that
+node. The fault checker requires at least one confirmed cache drop and rejects
+any unconfirmed attempt. This confirms fault injection, not transaction durability.
 
 Set OrioleDB buffer sizes before server startup with `--main-buffers` and
 `--undo-buffers`. Each accepts a positive integer followed by `kB`, `MB`, `GB`, or
