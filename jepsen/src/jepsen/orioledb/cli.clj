@@ -61,7 +61,7 @@
 (defn open [test _node]
   (pg-client/open test (:data-host test)))
 
-(def workloads (sql/workloads {:open open :error-fn pg-client/error-fn}))
+(def workloads-builders (sql/workloads {:open open :error-fn pg-client/error-fn}))
 
 (defn orioledb-test [opts]
   (let [engine (or (:engine opts) :orioledb)
@@ -72,7 +72,8 @@
         artifact (required-env "LAB_ARTIFACT")
         host (required-env "LAB_SSH_HOST")
         database (db/database)
-        workload ((workloads (:workload opts)) opts)
+        workload (let [make-workload (workloads-builders (:workload opts))]
+                   (make-workload opts))
         nemesis (nc/nemesis-package
                  {:db database :nodes [host] :faults (:nemesis opts)
                   :pause {:targets [:all]}
@@ -126,7 +127,7 @@
     ["-w" "--workload NAME" "SQL workload"
      :default :append
      :parse-fn keyword
-     :validate [workloads (cli/one-of workloads)]]
+     :validate [workloads-builders (cli/one-of workloads-builders)]]
     [nil "--nemesis FAULTS" "none, kill, pause, or kill,pause"
      :default [] :parse-fn pg-cli/parse-nemesis-spec
      :validate [(partial every? #{:kill :pause}) "Supported faults: kill and pause"]]
