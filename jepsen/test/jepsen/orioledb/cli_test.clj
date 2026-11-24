@@ -1,7 +1,7 @@
 (ns jepsen.orioledb.cli-test
   (:require [cheshire.core :as json]
             [clojure.java.io :as io]
-            [clojure.test :refer :all]
+            [clojure.test :refer [deftest is]]
             [clojure.string :as str]
             [clojure.tools.cli :as tools-cli]
             [jepsen.cli :as jc]

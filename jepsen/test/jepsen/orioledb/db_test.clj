@@ -1,6 +1,6 @@
 (ns jepsen.orioledb.db-test
   (:require [clojure.string :as str]
-            [clojure.test :refer :all]
+            [clojure.test :refer [deftest is testing]]
             [jepsen.control :as c]
             [jepsen.control.util :as cu]
             [jepsen.db :as jdb]

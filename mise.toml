@@ -176,7 +176,12 @@ run = "cljfmt fix jepsen/src jepsen/test"
 [tasks."clj:lint"]
 description = "Lint the Clojure adapter and its tests"
 tools.clj-kondo = "2026.10.26"
-run = "clj-kondo --lint jepsen/src jepsen/test"
+run = """
+# Import dependency hooks, including Slingshot's analyzer for try+.
+classpath=$(cd jepsen && lein classpath) || exit $?
+clj-kondo --lint "$classpath" --copy-configs --skip-lint || exit $?
+clj-kondo --lint jepsen/src jepsen/test
+"""
 
 [tasks."upstream:sql"]
 description = "Explicitly pull SQL subtree updates (requires clean Git state)"

@@ -1,15 +1,18 @@
 (ns jepsen.orioledb.page-stats-test
   (:require [cheshire.core :as json]
             [clojure.java.io :as io]
-            [clojure.test :refer :all]
+            [clojure.test :refer [deftest is]]
             [jepsen.checker :as checker]
+            [jepsen.checker.perf :as perf]
             [jepsen.control :as c]
             [jepsen.control.util :as cu]
             [jepsen.db :as db]
+            [jepsen.nemesis :as nemesis]
             [jepsen.orioledb.db :as odb]
             [jepsen.orioledb.evictions :as trace]
             [jepsen.orioledb.page-stats :as ps]
-            [jepsen.store :as store])
+            [jepsen.store :as store]
+            [jepsen.util :as util])
   (:import (java.nio.file Files)))
 
 (def snapshots
@@ -95,7 +98,7 @@
 (deftest disabled-empty-and-unavailable-do-not-fabricate-plots
   (let [renders (atom [])]
     (with-redefs [store/path (fn [& _] "unused")
-                  jepsen.checker.perf/plot! #(swap! renders conj %)
+                  perf/plot! #(swap! renders conj %)
                   ps/read-samples (constantly [])]
       (is (= {:valid? true :disabled true}
              (checker/check (ps/plot-checker) {:engine :postgres :page-stats-interval 1} [] {})))
@@ -103,7 +106,7 @@
              (checker/check (ps/plot-checker) {:engine :orioledb :page-stats-interval 1 :nodes ["n1"]} [] {})))
       (is (empty? @renders)))
     (with-redefs [store/path (fn [& _] "unused")
-                  jepsen.checker.perf/plot! #(swap! renders conj %)
+                  perf/plot! #(swap! renders conj %)
                   ps/read-samples (constantly [{:elapsed 1 :available false :pools []}])]
       (ps/plot! {:nodes ["n1"]})
       (is (empty? @renders)))))
@@ -111,7 +114,7 @@
 (deftest nemesis-wrapper-cleans-up-on-success-and-start-failure
   (doseq [fail-start? [false true]]
     (let [events (atom [])
-          delegate (reify jepsen.nemesis/Nemesis
+          delegate (reify nemesis/Nemesis
                      (setup! [this _] (swap! events conj :setup) this)
                      (invoke! [_ _ op] op)
                      (teardown! [_ _] (swap! events conj :teardown)))
@@ -122,10 +125,10 @@
                     ps/stop! #(swap! events conj :stop)]
         (if fail-start?
           (is (thrown-with-msg? clojure.lang.ExceptionInfo #"start failed"
-                                (jepsen.nemesis/setup! (ps/wrap-nemesis delegate) test)))
-          (let [ready (jepsen.nemesis/setup! (ps/wrap-nemesis delegate) test)]
-            (is (= {:f :pause} (jepsen.nemesis/invoke! ready test {:f :pause})))
-            (jepsen.nemesis/teardown! ready test)))
+                                (nemesis/setup! (ps/wrap-nemesis delegate) test)))
+          (let [ready (nemesis/setup! (ps/wrap-nemesis delegate) test)]
+            (is (= {:f :pause} (nemesis/invoke! ready test {:f :pause})))
+            (nemesis/teardown! ready test)))
         (is (= (if fail-start? [:setup :start :stop :teardown]
                    [:setup :start :teardown :stop]) @events))))))
 
@@ -201,7 +204,7 @@
                        [{:engine :postgres :trace-evictions true} nil]]]
     (let [started (atom nil)]
       (with-redefs [c/exec (fn [& _])
-                    jepsen.util/relative-time-nanos (constantly 0)
+                    util/relative-time-nanos (constantly 0)
                     cu/start-daemon! (fn [& argv] (reset! started argv))]
         (ps/start! (assoc opts :page-stats-interval 1)))
       (is (= args (when @started (vec (drop-while #(not= "undo" %) @started)))))
