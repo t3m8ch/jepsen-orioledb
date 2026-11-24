@@ -28,6 +28,9 @@ Vagrant.configure("2") do |config|
         ENV.fetch("LAB_DEBIAN_RELEASE"), ENV.fetch("LAB_DEBIAN_VERSION"),
         ENV.fetch("LAB_APT_SNAPSHOT"), ENV.fetch("LAB_RUNTIME_PACKAGES")
       ]
+      if i == 1
+        node.vm.provision "lazyfs", type: "shell", path: "provision-lazyfs.sh", run: "never"
+      end
     end
   end
 end

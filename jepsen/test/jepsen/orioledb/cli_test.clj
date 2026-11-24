@@ -73,6 +73,12 @@
   (doseq [args [["--engine" "heap"] ["--engine" "unknown"] ["--engine"]]]
     (is (seq (:errors (tools-cli/parse-opts args cli/cli-opts))))))
 
+(deftest lazyfs-cli-option
+  (is (not (get-in (tools-cli/parse-opts [] cli/cli-opts) [:options :lazyfs])))
+  (let [{:keys [options errors]} (tools-cli/parse-opts ["--lazyfs"] cli/cli-opts)]
+    (is (empty? errors))
+    (is (true? (:lazyfs options)))))
+
 (deftest buffer-cli-options-reach-cluster-config
   (let [{:keys [options errors]}
         (tools-cli/parse-opts ["--main-buffers" "8MB" "--undo-buffers" "32MB"] cli/cli-opts)

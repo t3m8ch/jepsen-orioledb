@@ -152,6 +152,7 @@
     [nil "--postgres-user USER" "Database user" :default "postgres"]
     [nil "--postgres-port PORT" "Database port" :default 5432 :parse-fn parse-long]
     [nil "--postgres-sslmode MODE" "JDBC SSL mode" :default "disable"]
+    [nil "--lazyfs" "Run PostgreSQL on LazyFS without injecting filesystem faults"]
     [nil "--trace-evictions" "Trace OrioleDB evictions and non-evicting writeback (DEBUG1); defaults to 1s occupancy sampling; ignored with --engine postgres"]
     [nil "--page-stats-interval SECONDS" "Collect and plot OrioleDB pool occupancy (disabled if omitted; ignored with --engine postgres)"
      :parse-fn #(Double/parseDouble %)

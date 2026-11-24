@@ -1,7 +1,30 @@
 (ns jepsen.orioledb.db-test
   (:require [clojure.string :as str]
             [clojure.test :refer :all]
+            [jepsen.control :as c]
+            [jepsen.control.util :as cu]
             [jepsen.orioledb.db :as db]))
+
+(deftest lazyfs-mount-precedes-initdb-when-enabled
+  (doseq [enabled? [false true]]
+    (let [steps (atom [])]
+      (with-redefs [c/exec (fn [& [cmd]]
+                             (when (= (db/binary "initdb") cmd)
+                               (swap! steps conj :initdb)))
+                    cu/write-file! (fn [& _])
+                    db/check-cluster! (fn [_])
+                    db/mount-lazyfs! #(swap! steps conj :mount)]
+        (db/setup-cluster! {:lazyfs enabled?}))
+      (is (= (if enabled? [:mount :initdb] [:initdb]) @steps)))))
+
+(deftest unmount-pgdata-rejects-an-unexpected-filesystem
+  (let [commands (atom [])]
+    (with-redefs [c/exec (fn [& args]
+                          (swap! commands conj (first args))
+                          "ext4")]
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"unexpected mount"
+                            (db/unmount-pgdata!)))
+      (is (= [:findmnt] @commands)))))
 
 (deftest cluster-config-selects-engine
   (doseq [[engine preload access-method] [[:postgres "" "heap"]

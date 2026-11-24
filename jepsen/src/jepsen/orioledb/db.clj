@@ -1,12 +1,14 @@
 (ns jepsen.orioledb.db
   "Install the cached build and manage a disposable cluster on n1."
   (:require [cheshire.core :as json]
+            [clj-commons.slingshot :refer [try+]]
             [clojure.java.io :as io]
             [clojure.string :as str]
             [clojure.tools.logging :refer [info]]
             [jepsen.control :as c]
             [jepsen.control.util :as cu]
             [jepsen.db :as db]
+            [jepsen.lazyfs :as lazyfs]
             [jepsen.orioledb.page-stats :as page-stats]
             [jepsen.postgres.client :as pg-client]
             [next.jdbc :as jdbc]
@@ -17,6 +19,10 @@
 (def log-dir "/var/log/jepsen")
 (def log-file (str log-dir "/postgresql.log"))
 (def build-info-file (str log-dir "/build-info.json"))
+(def pg-lazyfs
+  (lazyfs/lazyfs {:dir data-dir
+                  :user "postgres"
+                  :log-file (str log-dir "/lazyfs.log")}))
 (def archive "/var/lib/jepsen/pgsql.tar.gz")
 (defn binary [name] (str prefix "/bin/" name))
 
@@ -119,11 +125,29 @@ log_line_prefix = '%m [%p] '
       (finally
         (sql! test "DROP TABLE public.jepsen_engine_probe")))))
 
+(defn mount-lazyfs! []
+  (c/sudo (:user pg-lazyfs)
+          (when-not (cu/exists? lazyfs/bin)
+            (throw (ex-info "LazyFS is not installed on n1; run the lazyfs provisioner first"
+                            {:binary lazyfs/bin}))))
+  (lazyfs/mount! pg-lazyfs))
+
+(defn unmount-pgdata! []
+  (when-let [fs-type (try+ (c/su (c/exec :findmnt :-n :-o :FSTYPE :-M data-dir))
+                           (catch [:exit 1] _ nil))]
+    (when-not (= "fuse.lazyfs" fs-type)
+      (throw (ex-info "Refusing to remove PGDATA on an unexpected mount"
+                      {:path data-dir :fs-type fs-type})))
+    ;; Unmount normally and propagate failures before deleting the backing store.
+    (c/sudo (:user pg-lazyfs) (c/exec :fusermount3 :-u data-dir))))
+
 (defn setup-cluster! [test]
   (c/su
    (c/exec :install :-d :-o "postgres" :-g "postgres" :-m "0755" data-dir)
    (c/exec :truncate :-s 0 log-file)
    (c/exec :chown "postgres:postgres" log-file))
+  (when (:lazyfs test)
+    (mount-lazyfs!))
   (c/sudo "postgres"
           (c/exec (binary "initdb") :-D data-dir :--locale=C :--encoding=UTF8)
           (cu/write-file! (cluster-config test)
@@ -147,8 +171,10 @@ log_line_prefix = '%m [%p] '
         (c/sudo "postgres"
                 (c/exec (binary "pg_ctl") :-D data-dir :-m :immediate :-w :-t 60 :stop)))
       (signal! "KILL")
+      ;; Also clean up a mount left by an interrupted run without --lazyfs.
+      (unmount-pgdata!)
       ;; Jepsen collects LogFiles before this teardown. Keep logs for diagnostics.
-      (c/su (c/exec :rm :-rf data-dir prefix archive)))
+      (c/su (c/exec :rm :-rf data-dir (:lazyfs-dir pg-lazyfs) prefix archive)))
 
     db/Kill
     (start! [_ test _node] (start! test))
@@ -168,7 +194,9 @@ log_line_prefix = '%m [%p] '
            (c/exec :cp (str data-dir "/" filename) (str log-dir "/" filename))
            (c/exec :chmod "0644" (str log-dir "/" filename)))))
       (cond-> {log-file "postgresql.log"
-       build-info-file "build-info.json"
-       (str log-dir "/postgresql.conf") "postgresql.conf"
-       (str log-dir "/pg_hba.conf") "pg_hba.conf"}
-        (page-stats/enabled? test) (assoc page-stats/log-file "page-stats.jsonl")))))
+               build-info-file "build-info.json"
+               (str log-dir "/postgresql.conf") "postgresql.conf"
+               (str log-dir "/pg_hba.conf") "pg_hba.conf"}
+        (page-stats/enabled? test) (assoc page-stats/log-file "page-stats.jsonl")
+        (and (:lazyfs test) (cu/exists? (:log-file pg-lazyfs)))
+        (assoc (:log-file pg-lazyfs) "lazyfs.log")))))

@@ -175,6 +175,25 @@ creating the OrioleDB extension and uses standard `heap` tables. All workloads,
 isolation options, and faults work with either engine. The selected engine is
 saved as `:engine` in the test metadata and prefixes the test name in `jepsen/store/`.
 
+### Run on LazyFS
+
+On an already provisioned `n1`, run the optional LazyFS provisioner once (or
+again after restoring a VM baseline that did not include LazyFS):
+
+```sh
+mise exec -- python3 scripts/lab.py vagrant provision n1 --provision-with lazyfs
+```
+
+Then run an append smoke test with `PGDATA` on LazyFS, including `pg_wal`:
+
+```sh
+mise run test:run -- --engine postgres --workload append --time-limit 30 --nemesis none --lazyfs
+```
+
+`--lazyfs` also works with `--engine orioledb`. It only changes where PostgreSQL
+stores data; it does not inject cache loss or change the existing nemeses.
+Jepsen collects `lazyfs.log` and unmounts `PGDATA` during teardown.
+
 Set OrioleDB buffer sizes before server startup with `--main-buffers` and
 `--undo-buffers`. Each accepts a positive integer followed by `kB`, `MB`, `GB`, or
 `TB`. Omitted options leave the server defaults in place. Both options are ignored
