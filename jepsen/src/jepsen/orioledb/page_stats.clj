@@ -47,12 +47,12 @@
      (c/exec :touch log-file)
      (c/exec :chmod "0644" log-file)
      (apply cu/start-daemon! {:pidfile pid-file :logfile "/var/log/jepsen/page-stats-collector.log"
-                        :chdir "/" :match-executable? false}
-                       "/usr/bin/setsid" "/bin/bash" script-file
-                       (:page-stats-interval test)
-                       (double (util/nanos->secs (util/relative-time-nanos)))
-                       "/opt/jepsen/pgsql/bin/psql" (:postgres-port test 5432) log-file
-                       (when (trace-enabled? test) ["undo"])))))
+                              :chdir "/" :match-executable? false}
+            "/usr/bin/setsid" "/bin/bash" script-file
+            (:page-stats-interval test)
+            (double (util/nanos->secs (util/relative-time-nanos)))
+            "/opt/jepsen/pgsql/bin/psql" (:postgres-port test 5432) log-file
+            (when (trace-enabled? test) ["undo"])))))
 
 (defn wrap-nemesis [delegate]
   (reify nemesis/Nemesis

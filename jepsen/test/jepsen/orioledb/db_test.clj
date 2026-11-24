@@ -22,8 +22,8 @@
 (deftest unmount-pgdata-rejects-an-unexpected-filesystem
   (let [commands (atom [])]
     (with-redefs [c/exec (fn [& args]
-                          (swap! commands conj (first args))
-                          "ext4")]
+                           (swap! commands conj (first args))
+                           "ext4")]
       (is (thrown-with-msg? clojure.lang.ExceptionInfo #"unexpected mount"
                             (db/unmount-pgdata!)))
       (is (= [:findmnt] @commands)))))
@@ -96,7 +96,7 @@
 
 (deftest cluster-creates-extension-only-for-orioledb
   (doseq [[engine actual extension?] [[:postgres "heap" false]
-                                     [:orioledb "orioledb" true]]]
+                                      [:orioledb "orioledb" true]]]
     (testing (str "engine=" engine ", extension?=" extension?)
       (with-cluster-stub actual
         (fn [statements]
@@ -132,8 +132,8 @@
 (deftest cache-drop-waits-for-log-appended-after-request
   (let [steps (atom [])]
     (with-redefs [c/exec (fn [& args]
-                          (swap! steps conj args)
-                          (when (= :stat (first args)) "42"))
+                           (swap! steps conj args)
+                           (when (= :stat (first args)) "42"))
                   lazyfs/lose-unfsynced-writes! #(swap! steps conj [:request %])]
       (is (= :cache-cleared (db/lose-unfsynced-writes!)))
       (let [[stat request wait] @steps]

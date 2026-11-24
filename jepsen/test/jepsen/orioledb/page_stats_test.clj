@@ -122,12 +122,12 @@
                     ps/stop! #(swap! events conj :stop)]
         (if fail-start?
           (is (thrown-with-msg? clojure.lang.ExceptionInfo #"start failed"
-                               (jepsen.nemesis/setup! (ps/wrap-nemesis delegate) test)))
+                                (jepsen.nemesis/setup! (ps/wrap-nemesis delegate) test)))
           (let [ready (jepsen.nemesis/setup! (ps/wrap-nemesis delegate) test)]
             (is (= {:f :pause} (jepsen.nemesis/invoke! ready test {:f :pause})))
             (jepsen.nemesis/teardown! ready test)))
         (is (= (if fail-start? [:setup :start :stop :teardown]
-                              [:setup :start :teardown :stop]) @events))))))
+                   [:setup :start :teardown :stop]) @events))))))
 
 (deftest trace-parsing-alignment-and-routing
   (let [anchor {:timestamp "2026-11-12T12:00:00Z" :elapsed 10}

@@ -71,8 +71,8 @@
                       (record-event buckets bounds event))
                     buckets))
                 (update buckets :coverage conj (when (and (number? (:elapsed anchor))
-                                                        (try (Instant/parse (or (:timestamp anchor) ""))
-                                                             (catch DateTimeParseException _ nil))) bounds))
+                                                          (try (Instant/parse (or (:timestamp anchor) ""))
+                                                               (catch DateTimeParseException _ nil))) bounds))
                 (line-seq reader)))
       (update buckets :coverage conj nil))))
 
