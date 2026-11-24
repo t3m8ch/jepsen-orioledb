@@ -183,6 +183,16 @@ clj-kondo --lint "$classpath" --copy-configs --skip-lint || exit $?
 clj-kondo --lint jepsen/src jepsen/test
 """
 
+[tasks."clj:complexity"]
+description = "Generate separate complexity reports for Clojure source and tests"
+tools."github:jlt-commons/jolt-metrics" = { version = "0.7.1", asset_pattern = "jolt-metrics-v0.7.1-x86_64-linux.tar.gz", checksum = "sha256:9c1ab920ebc8359fc9c2146674625feba7b7b9caf6ebb69b253f175afcf7c195" }
+run = """
+mkdir -p .cache/complexity || exit $?
+out=$(mktemp -d .cache/complexity/report.XXXXXX) || exit $?
+jolt-metrics jepsen/src "$out/src.md" --no-git --no-abstractions || exit $?
+jolt-metrics jepsen/test "$out/test.md" --no-git --no-abstractions
+"""
+
 [tasks."upstream:sql"]
 description = "Explicitly pull SQL subtree updates (requires clean Git state)"
 run = "git subtree pull --prefix=vendor/jepsen-sql https://github.com/jepsen-io/sql.git main --squash"

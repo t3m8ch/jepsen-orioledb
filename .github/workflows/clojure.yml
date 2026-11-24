@@ -26,7 +26,8 @@ jobs:
         uses: jdx/mise-action@924e7c586e33d7d4bae9c14e26c5d22e2beb6e78 # v5.3.0
         with:
           version: '2026.11.0'
-          install_args: --include-task-tools
+          # Cache task tools after the checks install only what they use.
+          cache_save_post: true
 
       - name: Lint Clojure
         run: mise run clj:lint

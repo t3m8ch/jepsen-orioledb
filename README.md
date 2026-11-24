@@ -393,6 +393,14 @@ This checks shell syntax, Jepsen test construction, node/network selection,
 and all Clojure namespaces. `cache:verify` checks binary cache integrity.
 Full verification requires `mise run lab:run` on a host with KVM/libvirt.
 
+### Clojure complexity reports
+
+On Linux x86-64, run `mise run clj:complexity` to measure cognitive and
+cyclomatic complexity. Mise installs the pinned `jolt-metrics` release on the
+first run. Each run writes two Markdown reports (`src.md` and `test.md`) to a
+new directory under `.cache/complexity/`. The reports cover `jepsen/src` and `jepsen/test`
+separately and exclude `vendor/` and Git history. This task is not a CI check.
+
 ### Page-pool occupancy
 
 Opt in to periodic OrioleDB snapshots and automatic PNG plots:
