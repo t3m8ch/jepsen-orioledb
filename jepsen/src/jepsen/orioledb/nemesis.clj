@@ -1,5 +1,8 @@
 (ns jepsen.orioledb.nemesis
-  (:require [jepsen.nemesis :as nem]
+  (:require [jepsen.control :as c]
+            [jepsen.nemesis :as nem]
+            [jepsen.nemesis.combined :as nc]
+            [jepsen.orioledb.db :as db]
             [jepsen.generator :as gen]
             [jepsen.postgres.client :as pg]
             [next.jdbc :as jdbc]))
@@ -56,3 +59,23 @@
    :generator (gen/once {:type :info :f :hold-snapshot})
    :final-generator (gen/once {:type :info :f :release-snapshot})})
 
+(defn wrap-cache-loss-kill [original-nemesis database]
+  (reify
+    nem/Reflection
+    (fs [_] (nem/fs original-nemesis))
+
+    nem/Nemesis
+    (setup! [_ test]
+      (wrap-cache-loss-kill (nem/setup! original-nemesis test) database))
+
+    (invoke! [_ test op]
+      (if (= :kill (:f op))
+        (let [nodes (nc/db-nodes test database (:value op))
+              result (c/on-nodes test nodes
+                                 (fn [test node]
+                                   (db/kill-with-cache-loss! database test node)))]
+          (assoc op :value result))
+        (nem/invoke! original-nemesis test op)))
+
+    (teardown! [_ test]
+      (nem/teardown! original-nemesis test))))

@@ -15,6 +15,7 @@
             [next.jdbc.result-set :as rs]))
 
 (def prefix "/opt/jepsen/pgsql")
+(def ^:private await-postgres-exit-script (str prefix "/await-postgres-exit.sh"))
 (def data-dir "/var/lib/jepsen/pgdata")
 (def log-dir "/var/log/jepsen")
 (def log-file (str log-dir "/postgresql.log"))
@@ -142,13 +143,8 @@ log_line_prefix = '%m [%p] '
     (c/sudo (:user pg-lazyfs) (c/exec :fusermount3 :-u data-dir))))
 
 (defn await-postgres-exit! []
-  ;; A killed process may remain as a zombie, but can no longer issue writes.
   (c/su
-   (c/exec :timeout "10s" :bash :-euc
-           (str "while :; do "
-                "processes=$(ps -u postgres -o stat=,comm=) || test $? = 1; "
-                "live=$(awk '$2 == \"postgres\" && $1 !~ /^Z/ { print; exit }' <<< \"$processes\"); "
-                "[[ -n $live ]] || exit 0; sleep 0.1; done"))))
+   (c/exec :timeout "10s" :bash await-postgres-exit-script)))
 
 (defn lose-unfsynced-writes! []
   (let [log (:log-file pg-lazyfs)
@@ -182,6 +178,10 @@ log_line_prefix = '%m [%p] '
                     (str data-dir "/pg_hba.conf"))))
   (check-cluster! test))
 
+(defprotocol CacheLoss
+  (kill-with-cache-loss! [database test node]
+    "Kills PostgreSQL and waits for LazyFS to confirm the cache drop."))
+
 (defn database []
   (let [unconfirmed-nodes (atom #{})]
     (reify
@@ -190,6 +190,10 @@ log_line_prefix = '%m [%p] '
         (swap! unconfirmed-nodes disj node)
         (page-stats/stop!)
         (install! test)
+        (when (:lose-unfsynced-writes test)
+          (c/su
+           (cu/write-file! (slurp (io/resource "await-postgres-exit.sh"))
+                           await-postgres-exit-script)))
         (page-stats/prepare!)
         (setup-cluster! test))
       (teardown! [_ _test _node]
@@ -210,20 +214,20 @@ log_line_prefix = '%m [%p] '
           (throw (ex-info "Cannot restart PostgreSQL after unconfirmed LazyFS cache loss"
                           {:node node})))
         (start! test))
-      (kill! [_ test node]
-        (if-not (:lose-unfsynced-writes test)
-          (signal! "KILL")
-          (do
-            ;; After a timeout the previous request may still complete. Never
-            ;; submit another one on this node or mistake its ACK for a new one.
-            (when (contains? @unconfirmed-nodes node)
-              (throw (ex-info "Previous LazyFS cache loss was not confirmed" {:node node})))
-            (swap! unconfirmed-nodes conj node)
-            (signal! "KILL")
-            (await-postgres-exit!)
-            (let [result (lose-unfsynced-writes!)]
-              (swap! unconfirmed-nodes disj node)
-              result))))
+      (kill! [_ _test _node]
+        (signal! "KILL"))
+
+      CacheLoss
+      (kill-with-cache-loss! [this test node]
+        ;; A timed-out request may still complete. Never mistake its ACK for a new one.
+        (when (contains? @unconfirmed-nodes node)
+          (throw (ex-info "Previous LazyFS cache loss was not confirmed" {:node node})))
+        (swap! unconfirmed-nodes conj node)
+        (db/kill! this test node)
+        (await-postgres-exit!)
+        (let [result (lose-unfsynced-writes!)]
+          (swap! unconfirmed-nodes disj node)
+          result))
 
       db/Pause
       (pause! [_ _test _node] (signal! "STOP"))

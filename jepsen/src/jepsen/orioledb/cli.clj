@@ -14,7 +14,7 @@
             [jepsen.sql :as sql]
             [jepsen.tests :as tests]
             [jepsen.orioledb.checker :as orioledb-checker]
-            [jepsen.orioledb.nemesis :as snapshot]
+            [jepsen.orioledb.nemesis :as orioledb-nemesis]
             [jepsen.orioledb.page-stats :as page-stats]
             [jepsen.orioledb.db :as db])
   (:import (java.security MessageDigest)
@@ -79,14 +79,17 @@
         faults (set (:nemesis opts))
         db-faults (disj faults :hold-snapshot)
         db-pkg (when (seq db-faults)
-                 (nc/db-package
-                  {:db database
-                   :faults db-faults
-                   :pause {:targets [:all]}
-                   :kill {:targets [:all]}
-                   :interval (:nemesis-interval opts)}))
+                 (let [pkg (nc/db-package
+                            {:db database
+                             :faults db-faults
+                             :pause {:targets [:all]}
+                             :kill {:targets [:all]}
+                             :interval (:nemesis-interval opts)})]
+                   (if (:lose-unfsynced-writes opts)
+                     (update pkg :nemesis orioledb-nemesis/wrap-cache-loss-kill database)
+                     pkg)))
         snapshot-pkg (when (faults :hold-snapshot)
-                       (snapshot/snapshot-package))
+                       (orioledb-nemesis/snapshot-package))
         combined (nc/compose-packages (remove nil? [db-pkg snapshot-pkg]))
         nemesis (if snapshot-pkg
                   (assoc combined :generator

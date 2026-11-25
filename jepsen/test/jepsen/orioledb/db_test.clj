@@ -3,9 +3,15 @@
             [clojure.test :refer [deftest is testing]]
             [jepsen.control :as c]
             [jepsen.control.util :as cu]
+            [jepsen.core :as core]
             [jepsen.db :as jdb]
             [jepsen.lazyfs :as lazyfs]
-            [jepsen.orioledb.db :as db]))
+            [jepsen.nemesis :as nem]
+            [jepsen.nemesis.combined :as nc]
+            [jepsen.orioledb.db :as db]
+            [jepsen.orioledb.nemesis :as orioledb-nemesis]
+            [jepsen.orioledb.page-stats :as page-stats]
+            [jepsen.store :as store]))
 
 (deftest lazyfs-mount-precedes-initdb-when-enabled
   (doseq [enabled? [false true]]
@@ -103,31 +109,91 @@
           (db/check-cluster! {:engine engine})
           (is (= extension? (boolean (some #{create-extension} @statements)))))))))
 
-(deftest kill-only-clears-cache-when-enabled-and-after-exit
+(deftest postgres-exit-script-is-installed-only-for-cache-loss
+  (doseq [enabled? [false true]]
+    (let [steps (atom [])
+          script (str db/prefix "/await-postgres-exit.sh")]
+      (with-redefs [page-stats/stop! (fn [])
+                    db/install! (fn [_] (swap! steps conj :install))
+                    cu/write-file! (fn [body path]
+                                     (is (str/starts-with? body "#!/bin/bash"))
+                                     (swap! steps conj [:write path]))
+                    page-stats/prepare! (fn [])
+                    db/setup-cluster! (fn [_] (swap! steps conj :cluster))
+                    c/exec (fn [& args] (swap! steps conj (vec args)))]
+        (jdb/setup! (db/database) {:lose-unfsynced-writes enabled?} "n1")
+        (when enabled?
+          (db/await-postgres-exit!)))
+      (is (= (if enabled?
+               [:install [:write script] :cluster [:timeout "10s" :bash script]]
+               [:install :cluster])
+             @steps)))))
+
+(deftest cache-loss-kill-clears-cache-after-exit
   (let [steps (atom [])
         database (db/database)]
     (with-redefs [db/signal! #(swap! steps conj %)
                   db/await-postgres-exit! #(swap! steps conj :exit)
                   db/lose-unfsynced-writes! #(do (swap! steps conj :clear) :cache-cleared)]
-      (jdb/kill! database {:lazyfs true} "n1")
-      (is (= ["KILL"] @steps))
-      (reset! steps [])
-      (is (= :cache-cleared (jdb/kill! database {:lose-unfsynced-writes true} "n1")))
+      (is (= :cache-cleared (db/kill-with-cache-loss! database {} "n1")))
       (is (= ["KILL" :exit :clear] @steps)))))
 
-(deftest unconfirmed-cache-loss-blocks-restart-and-retry
+(deftest cache-loss-nemesis-intercepts-kill-and-delegates-start
   (let [database (db/database)
-        test {:lose-unfsynced-writes true}]
-    (with-redefs [db/signal! (fn [_])
-                  db/await-postgres-exit! (fn [])
-                  db/lose-unfsynced-writes! #(throw (ex-info "timeout" {}))
+        test {:nodes ["n1"]}
+        wrapper (nem/setup! (orioledb-nemesis/wrap-cache-loss-kill
+                             (nc/db-nemesis database) database) test)
+        steps (atom [])]
+    (with-redefs [c/on-nodes (fn [test nodes f]
+                               (into {} (map (fn [node] [node (f test node)])) nodes))
+                  db/signal! #(swap! steps conj %)
+                  db/await-postgres-exit! #(swap! steps conj :exit)
+                  db/lose-unfsynced-writes! (constantly :cache-cleared)
                   db/start! (constantly :started)]
+      (is (= {:f :kill :value {"n1" :cache-cleared}}
+             (nem/invoke! wrapper test {:f :kill :value :all})))
+      (is (= ["KILL" :exit] @steps))
+      (is (= {:f :start :value {"n1" :started}}
+             (nem/invoke! wrapper test {:f :start :value :all}))))))
+
+(deftest log-collection-kill-does-not-drop-cache
+  (let [database (db/database)
+        steps (atom [])]
+    (with-redefs [db/signal! #(swap! steps conj %)
+                  db/await-postgres-exit! #(swap! steps conj :exit)
+                  db/lose-unfsynced-writes! #(swap! steps conj :clear)]
+      (jdb/kill! database {:lose-unfsynced-writes true} "n1")
+      (is (= ["KILL"] @steps)))))
+
+(deftest unconfirmed-cache-loss-blocks-restart-and-retry-but-not-log-collection
+  (let [database (db/database)
+        test {:db database :nodes ["n1"] :lazyfs true :lose-unfsynced-writes true}
+        steps (atom [])
+        downloads (atom #{})]
+    (with-redefs [db/signal! #(swap! steps conj %)
+                  db/await-postgres-exit! #(swap! steps conj :exit)
+                  db/lose-unfsynced-writes! #(do (swap! steps conj :clear)
+                                                 (throw (ex-info "timeout" {})))
+                  db/start! (constantly :started)
+                  c/on-nodes (fn [test f] (f test "n1"))
+                  c/exec (fn [& _])
+                  cu/exists? (constantly true)
+                  page-stats/stop! (fn [])
+                  store/path! (fn [_ _ filename] (java.io.File. filename))
+                  store/update-symlinks! (fn [_])
+                  c/download (fn [remote _] (swap! downloads conj remote))]
       (is (thrown-with-msg? clojure.lang.ExceptionInfo #"timeout"
-                            (jdb/kill! database test "n1")))
+                            (db/kill-with-cache-loss! database test "n1")))
       (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Cannot restart"
                             (jdb/start! database test "n1")))
       (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Previous LazyFS cache loss"
-                            (jdb/kill! database test "n1"))))))
+                            (db/kill-with-cache-loss! database test "n1")))
+      (core/snarf-logs! test)
+      (is (= ["KILL" :exit :clear "KILL"] @steps))
+      (is (contains? @downloads db/log-file))
+      (is (contains? @downloads (:log-file db/pg-lazyfs)))
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Cannot restart"
+                            (jdb/start! database test "n1"))))))
 
 (deftest cache-drop-waits-for-log-appended-after-request
   (let [steps (atom [])]
