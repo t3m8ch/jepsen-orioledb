@@ -177,6 +177,8 @@ run = "cljfmt fix jepsen/src jepsen/test"
 description = "Lint the Clojure adapter and its tests"
 tools.clj-kondo = "2026.10.26"
 run = """
+# clj-kondo needs this directory to import hooks on a fresh checkout.
+mkdir -p .clj-kondo || exit $?
 # Import dependency hooks, including Slingshot's analyzer for try+.
 classpath=$(cd jepsen && lein classpath) || exit $?
 clj-kondo --lint "$classpath" --copy-configs --skip-lint || exit $?
